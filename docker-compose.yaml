@@ -1,0 +1,68 @@
+version: '3.9'
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: ./database/Dockerfile
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_DB: llm_data
+    secrets:
+      - postgres_password
+    ports:
+      - "5432:5432"
+      - "5001:5001"
+      - "5002:5002"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  search:
+    build:
+      context: .
+      dockerfile: ./search/Dockerfile
+    volumes:
+      - ./search:/app
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: admin
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      DATABASE_NAME: llm_data
+    ports:
+      - "5000:5000"
+
+  chatllm:
+    build:
+      context: ./
+      dockerfile: ./chat/Dockerfile
+    depends_on:
+      - search
+    ports:
+      - "8081:8081"
+    secrets:
+      - hf_api_token
+    environment:
+      HF_API_TOKEN_FILE: /run/secrets/hf_api_token 
+
+  webapp:
+    build:
+      context: ./webapp
+      dockerfile: ./Dockerfile
+    depends_on:
+      - chatllm
+    ports:
+      - "8080:80"
+    environment:
+      API_URL: "http://chatllm:8081"
+
+volumes:
+  postgres_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  hf_api_token:
+    file: ./secrets/hf_api_token.txt

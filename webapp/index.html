@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Chat</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <h1>Data Review</h1>
+        <a href="https://www.youtube.com/@datarvw" target="_blank">YouTube</a>
+        <a href="https://github.com/rianbl" target="_blank">Github</a>
+    </header>
+    
+    <div class="chat-upload-wrapper">
+        <div class="chat-container">
+            <div class="chat-display" id="chatDisplay"></div>
+            <div class="chat-input">
+                <input type="text" id="userInput" placeholder="Ask me about your data...">
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+        <div id="fileNameDisplay" style="font-weight: normal; text-align: center; margin-top: 10px;">
+            No data yet
+        </div>        
+        <div class="upload-container">
+            <h3>Upload your data (CSV)</h3>
+            <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
+                Drag & Drop your file here
+            </div>
+            <input type="file" id="fileInput" onchange="uploadFile()" hidden>
+            <button onclick="document.getElementById('fileInput').click()">Browse</button>
+        </div>
+    </div>
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Uploading file, please wait...</p>
+    </div>
+    
+    <script src="script.js"></script>
+</body>
+</html>

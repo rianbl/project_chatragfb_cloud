@@ -1,0 +1,5 @@
+Flask==2.3.3
+Flask-CORS
+requests==2.31.0
+langchain==0.0.306
+ollama
