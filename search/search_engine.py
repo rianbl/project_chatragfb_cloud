@@ -1,8 +1,8 @@
 import psycopg2
 from flask import Flask, request, jsonify
-from langchain.vectorstores import FAISS
-from langchain.embeddings import SentenceTransformerEmbeddings
-from langchain.schema import Document
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_core.documents import Document
 import logging
 import os
 
@@ -12,21 +12,13 @@ app.debug = True
 # Set up logger
 app.logger.setLevel(logging.INFO)
 
-# Function to fetch the database password from secrets
-def get_db_password():
-    db_password_file = os.getenv("DATABASE_PASSWORD_FILE")
-    if db_password_file and os.path.exists(db_password_file):
-        with open(db_password_file, 'r') as file:
-            return file.read().strip()
-    return os.getenv("DATABASE_PASSWORD", "admin")  # Default to "admin" if not provided
-
 # Database configuration
 DB_CONFIG = {
     "host": os.getenv("DATABASE_HOST", "postgres"),
     "port": os.getenv("DATABASE_PORT", "5432"),
     "dbname": os.getenv("DATABASE_NAME", "llm_data"),
     "user": os.getenv("DATABASE_USER", "admin"),
-    "password": get_db_password()
+    "password": os.getenv("DATABASE_PASSWORD", "admin")
 }
 
 # Global variables for caching
@@ -88,7 +80,7 @@ def query_vectorstore():
         
         vectorstore = get_vectorstore()
         retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
-        docs = retriever.get_relevant_documents(query)
+        docs = retriever.invoke(query)
         
         results = [
             {"content": doc.page_content, "metadata": doc.metadata}

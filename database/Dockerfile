@@ -1,4 +1,4 @@
-FROM postgres:latest
+FROM postgres:17
 
 # Set environment variables for PostgreSQL
 ENV POSTGRES_USER=admin
@@ -28,5 +28,5 @@ COPY database/schema_builder.py /schema_builder.py
 COPY database/populate.py /populate.py
 COPY database/fb_monitor.py /fb_monitor.py
 
-# Entrypoint: source secrets and start services
-CMD ["bash", "-c", "export POSTGRES_PASSWORD=$(cat /run/secrets/postgres_password) && docker-entrypoint.sh postgres & python3 /data_loader.py & python3 /fb_monitor.py"]
+# Entrypoint: start postgres and application services
+CMD ["bash", "-c", "docker-entrypoint.sh postgres & python3 /data_loader.py & python3 /fb_monitor.py"]

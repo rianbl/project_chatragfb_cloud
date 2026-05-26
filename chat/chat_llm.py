@@ -5,6 +5,7 @@ import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
+from huggingface_hub import InferenceClient
 
 # Flask and CORS setup
 app = Flask(__name__)
@@ -18,25 +19,18 @@ SEARCH_API_URL = "http://search:5000/query"
 SYSTEM_MESSAGE = (
     ""
 )
+HF_MODEL_ID = os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
+HF_PROVIDER = os.getenv("HF_PROVIDER", "auto").strip()
+HF_TIMEOUT = float(os.getenv("HF_TIMEOUT", "60"))
 
-HF_API_URL = "https://api-inference.huggingface.co/models/meta-llama/Llama-3.2-3B-Instruct"
+HF_API_TOKEN = os.getenv("HF_API_TOKEN", "").strip()
+if not HF_API_TOKEN:
+    raise RuntimeError("Missing required environment variable: HF_API_TOKEN")
 
-# Read Hugging Face API token securely from the secret file
-HF_API_TOKEN_FILE = os.getenv("HF_API_TOKEN_FILE", "/run/secrets/hf_api_token")
-
-def get_hf_api_token():
-    """Retrieve Hugging Face API token from the secret file."""
-    try:
-        with open(HF_API_TOKEN_FILE, "r") as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        logging.error("HF API token file not found.")
-        raise
-    except Exception as e:
-        logging.error(f"Error reading HF API token file: {e}")
-        raise
-
-HF_API_TOKEN = get_hf_api_token()
+if HF_PROVIDER.lower() == "auto":
+    HF_CLIENT = InferenceClient(api_key=HF_API_TOKEN, timeout=HF_TIMEOUT)
+else:
+    HF_CLIENT = InferenceClient(api_key=HF_API_TOKEN, provider=HF_PROVIDER, timeout=HF_TIMEOUT)
 
 # Logging setup
 logging.basicConfig(
@@ -47,18 +41,53 @@ logging.basicConfig(
 
 # Helper to call Hugging Face API
 def query_hf_api(payload, retries=2, delay=5):
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    
+    prompt = payload.get("inputs", "")
+    system_message = payload.get("system_message", "")
+    user_query = payload.get("user_query", "")
+    context = payload.get("context", "")
+    parameters = payload.get("parameters", {})
+    max_new_tokens = int(parameters.get("max_length", 200))
+    temperature = float(parameters.get("temperature", 0.2))
+    last_exception = None
+
     for attempt in range(retries):
-        response = requests.post(HF_API_URL, headers=headers, json=payload)
-        
-        if response.status_code == 200:
-            return response.json()
-        
-        print(f"Tentativa {attempt+1}/{retries} falhou: {response.text}")
+        try:
+            try:
+                generated_text = HF_CLIENT.text_generation(
+                    prompt=prompt,
+                    model=HF_MODEL_ID,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature
+                )
+            except ValueError as e:
+                # Some providers expose this model only for conversational task.
+                if "Supported task: conversational" not in str(e):
+                    raise
+                messages = [
+                    {"role": "system", "content": system_message or "Você é um assistente útil e objetivo."},
+                    {
+                        "role": "user",
+                        "content": f"Usando o contexto seguinte, responda: {user_query}\n\nContexto:\n{context}"
+                    }
+                ]
+                completion = HF_CLIENT.chat_completion(
+                    model=HF_MODEL_ID,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_new_tokens
+                )
+                generated_text = completion.choices[0].message.content
+
+            return [{"generated_text": f"{prompt}{generated_text}"}]
+        except Exception as e:
+            last_exception = e
+            logging.error(f"HF call attempt {attempt+1}/{retries} failed: {type(e).__name__}: {e}")
         time.sleep(delay) 
-    
-    response.raise_for_status()
+
+    raise RuntimeError(
+        f"Failed to call Hugging Face Inference API after {retries} attempts "
+        f"(provider={HF_PROVIDER}, model={HF_MODEL_ID}): {last_exception}"
+    ) from last_exception
 
 # Intent identification function
 def identify_intent(query):
@@ -129,6 +158,9 @@ def chat():
         app.logger.info(f"Model call full inputs: {inputs}")
         response = query_hf_api({
             "inputs": inputs,
+            "system_message": system_message,
+            "user_query": user_query,
+            "context": retrieved_content,
             "parameters": {
                 "temperature": 0.2,
                 "max_length": 200

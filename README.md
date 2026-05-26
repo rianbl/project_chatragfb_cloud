@@ -37,7 +37,7 @@ Browser (localhost:8080)
 |- search/      # Retrieval API (Flask + LangChain + FAISS)
 |- database/    # PostgreSQL image + CSV ingestion + feedback API
 |- webapp/      # Static frontend (HTML/CSS/JS via NGINX)
-|- secrets/     # Runtime secret files (HF token, Postgres password)
+|- .env.example # Environment template for local secrets/config
 |- docker-compose.yaml
 ```
 
@@ -49,27 +49,36 @@ Browser (localhost:8080)
 
 ## Quick Start
 
-1. Create required secret files:
+1. Create your environment file:
 
 ```bash
-mkdir -p secrets
-echo "YOUR_HF_TOKEN" > secrets/hf_api_token.txt
-echo "admin" > secrets/postgres_password.txt
+cp .env.example .env
 ```
 
-2. Start the stack:
+2. Edit `.env` and set at least:
+
+```bash
+HF_API_TOKEN=YOUR_HF_TOKEN
+POSTGRES_PASSWORD=admin
+# Optional
+HF_MODEL_ID=Qwen/Qwen2.5-7B-Instruct
+HF_PROVIDER=auto
+HF_TIMEOUT=60
+```
+
+3. Start the stack:
 
 ```bash
 docker compose up --build
 ```
 
-3. Open the app:
+4. Open the app:
 
 ```text
 http://localhost:8080
 ```
 
-4. Upload a CSV file in the UI, then ask questions in the chat panel.
+5. Upload a CSV file in the UI, then ask questions in the chat panel.
 
 ## Services and Ports
 
@@ -125,10 +134,14 @@ curl -X POST "http://localhost:5002/feedback" \
 
 ## Operational Notes
 
-- Secrets are read from mounted files:
-  - `secrets/hf_api_token.txt`
-  - `secrets/postgres_password.txt`
-- Current ingestion scripts in `database/` expect PostgreSQL password `admin` (hardcoded).
+- Secrets/config are read from environment variables (`.env` with Docker Compose).
+- Main required variables:
+  - `HF_API_TOKEN`
+  - `POSTGRES_PASSWORD`
+- Optional:
+  - `HF_MODEL_ID` (defaults to `Qwen/Qwen2.5-7B-Instruct`)
+  - `HF_PROVIDER` (defaults to `auto`; use `hf-inference` only if the model is supported there)
+  - `HF_TIMEOUT` (seconds, defaults to `60`)
 - Retrieval cache is built in-memory and can be refreshed via `/refresh`.
 - If no CSV has been uploaded yet, chat responses may indicate missing relevant data.
 

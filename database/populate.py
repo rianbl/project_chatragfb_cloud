@@ -4,11 +4,11 @@ import psycopg2
 from psycopg2 import sql
 
 DB_CONFIG = {
-    "host": "postgres",  # Update if necessary
-    "port": "5432",
-    "dbname": "llm_data",
-    "user": "admin",
-    "password": "admin"
+    "host": os.getenv("DATABASE_HOST", "postgres"),
+    "port": os.getenv("DATABASE_PORT", "5432"),
+    "dbname": os.getenv("DATABASE_NAME", "llm_data"),
+    "user": os.getenv("DATABASE_USER", "admin"),
+    "password": os.getenv("DATABASE_PASSWORD", os.getenv("POSTGRES_PASSWORD", "admin"))
 }
 
 def populate_table():

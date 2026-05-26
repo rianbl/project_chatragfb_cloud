@@ -8,12 +8,16 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_DB: llm_data
-    secrets:
-      - postgres_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
       - "5001:5001"
       - "5002:5002"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d llm_data"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -24,12 +28,13 @@ services:
     volumes:
       - ./search:/app
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_USER: admin
-      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
       DATABASE_NAME: llm_data
     ports:
       - "5000:5000"
@@ -42,10 +47,8 @@ services:
       - search
     ports:
       - "8081:8081"
-    secrets:
-      - hf_api_token
     environment:
-      HF_API_TOKEN_FILE: /run/secrets/hf_api_token 
+      HF_API_TOKEN: ${HF_API_TOKEN}
 
   webapp:
     build:
@@ -60,9 +63,3 @@ services:
 
 volumes:
   postgres_data:
-
-secrets:
-  postgres_password:
-    file: ./secrets/postgres_password.txt
-  hf_api_token:
-    file: ./secrets/hf_api_token.txt
