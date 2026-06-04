@@ -2,3 +2,20 @@ secrets/
 .env
 .env.*
 !.env.example
+
+# Runtime/temp artifacts
+uploads/
+data/
+
+# Local Python environments/dependencies
+.venv/
+.pydeps/
+pydeps/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local ad-hoc smoke/verification scripts
+tmp_*.py
+tmp_*.csv

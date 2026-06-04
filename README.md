@@ -1,19 +1,19 @@
-# ChatRAG CSV (Dockerized)
+# ChatRAG Files (Dockerized)
 
-A containerized Retrieval-Augmented Generation (RAG) application that lets you upload a CSV file and chat with its content through a web interface.
+A containerized Retrieval-Augmented Generation (RAG) application that lets you upload CSV, TXT, or PDF files and chat with their content through a web interface.
 
 The stack includes:
 - `webapp`: static frontend (NGINX)
 - `chatllm`: chat API that orchestrates retrieval + LLM generation
 - `search`: semantic retrieval service (FAISS + sentence-transformers)
-- `postgres`: database + CSV ingestion API + feedback API
+- `postgres`: database + multi-format ingestion API + feedback API
 
 ## Features
 
-- Upload a CSV file from the browser (drag-and-drop or file picker)
-- Auto-create database schema from CSV columns
-- Auto-populate PostgreSQL table with uploaded data
-- Build/refresh a FAISS vector store from the database
+- Upload CSV, TXT, or PDF files from the browser (drag-and-drop or file picker)
+- Parse file content into chunked document units
+- Persist documents/chunks in PostgreSQL
+- Build/refresh a FAISS vector store from chunked content
 - Ask questions in natural language and get answers grounded in your data
 - Capture thumbs up/down feedback events
 
@@ -21,8 +21,8 @@ The stack includes:
 
 ```text
 Browser (localhost:8080)
-  -> Upload CSV -> Data Loader API (postgres:5001)
-       -> Create table + insert rows in PostgreSQL (postgres:5432)
+  -> Upload file (CSV/TXT/PDF) -> Data Loader API (postgres:5001)
+       -> Parse + chunk + persist documents/chunks in PostgreSQL (postgres:5432)
        -> Trigger vector refresh (search:5000/refresh)
   -> Ask question -> Chat API (chatllm:8081/chat)
        -> Retrieve context (search:5000/query)
@@ -35,7 +35,7 @@ Browser (localhost:8080)
 .
 |- chat/        # Chat API (Flask) + Hugging Face inference call
 |- search/      # Retrieval API (Flask + LangChain + FAISS)
-|- database/    # PostgreSQL image + CSV ingestion + feedback API
+|- database/    # PostgreSQL image + file ingestion/chunking + feedback API
 |- webapp/      # Static frontend (HTML/CSS/JS via NGINX)
 |- .env.example # Environment template for local secrets/config
 |- docker-compose.yaml
@@ -78,7 +78,7 @@ docker compose up --build
 http://localhost:8080
 ```
 
-5. Upload a CSV file in the UI, then ask questions in the chat panel.
+5. Upload a CSV, TXT, or PDF file in the UI, then ask questions in the chat panel.
 
 ## Services and Ports
 
@@ -88,7 +88,7 @@ http://localhost:8080
 | `chatllm` | 8081 | 8081 | Chat endpoint |
 | `search` | 5000 | 5000 | Retrieval/query endpoint |
 | `postgres` | 5432 | 5432 | PostgreSQL |
-| `postgres` | 5001 | 5001 | CSV upload/data loader API |
+| `postgres` | 5001 | 5001 | File upload/ingestion API |
 | `postgres` | 5002 | 5002 | Feedback API |
 
 ## API Reference
@@ -113,7 +113,7 @@ curl -X POST "http://localhost:5000/query" \
   -d '{"query":"Alice bought"}'
 ```
 
-### CSV Upload
+### File Upload (CSV/TXT/PDF)
 
 `POST /upload` on `http://localhost:5001/upload` (`multipart/form-data`)
 
@@ -143,7 +143,7 @@ curl -X POST "http://localhost:5002/feedback" \
   - `HF_PROVIDER` (defaults to `auto`; use `hf-inference` only if the model is supported there)
   - `HF_TIMEOUT` (seconds, defaults to `60`)
 - Retrieval cache is built in-memory and can be refreshed via `/refresh`.
-- If no CSV has been uploaded yet, chat responses may indicate missing relevant data.
+- If no file has been uploaded yet, chat responses may indicate missing relevant data.
 
 ## Troubleshooting
 

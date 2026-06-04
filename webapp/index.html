@@ -26,11 +26,11 @@
             No data yet
         </div>        
         <div class="upload-container">
-            <h3>Upload your data (CSV)</h3>
+            <h3>Upload your data (CSV, TXT, PDF)</h3>
             <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
                 Drag & Drop your file here
             </div>
-            <input type="file" id="fileInput" onchange="uploadFile()" hidden>
+            <input type="file" id="fileInput" onchange="uploadFile()" accept=".csv,.txt,.pdf" hidden>
             <button onclick="document.getElementById('fileInput').click()">Browse</button>
         </div>
     </div>
