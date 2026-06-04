@@ -18,6 +18,9 @@ def create_schema():
         filename TEXT NOT NULL,
         file_type TEXT NOT NULL,
         storage_path TEXT,
+        size_bytes BIGINT NOT NULL DEFAULT 0,
+        page_count INTEGER,
+        chunk_count INTEGER NOT NULL DEFAULT 0,
         uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -32,6 +35,11 @@ def create_schema():
     );
 
     CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS storage_path TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_count INTEGER;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER NOT NULL DEFAULT 0;
     """
 
     conn = psycopg2.connect(**DB_CONFIG)

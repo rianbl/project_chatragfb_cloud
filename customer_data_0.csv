@@ -1,6 +1,0 @@
-ID,Nome,Idade,Sexo,Endereco,Telefone,Email,Data_de_compra,Produto,Quantidade,Valor_Total
-1,João Silva,34,M,Rua das Flores, 123, (11) 98765-4321, joao@email.com, 2024-12-15, Celular,1,1500
-2,Ana Souza,28,F,Av. Paulista, 456, (11) 91234-5678, ana@email.com, 2024-12-14, Notebook,1,3000
-3,Pedro Costa,45,M,Rua Rio de Janeiro, 789, (21) 99876-5432, pedro@email.com, 2024-12-10, TV,1,2000
-4,Mariana Oliveira,38,F,Rua Bahia, 1011, (31) 98765-4320, mariana@email.com, 2024-12-12, Geladeira,1,3500
-5,Lucas Pereira,25,M,Av. Brasil, 1213, (41) 97654-3210, lucas@email.com, 2024-12-08, Micro-ondas,2,800

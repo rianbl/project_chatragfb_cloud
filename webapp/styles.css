@@ -135,6 +135,92 @@ body {
     text-align: center;
 }
 
+.files-panel {
+    width: 600px;
+    max-width: 90%;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background-color: #ffffff;
+    padding: 12px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.08);
+}
+
+.files-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.files-header h3 {
+    margin: 0;
+    font-size: 16px;
+}
+
+#filesCounter {
+    font-size: 14px;
+    font-weight: bold;
+    color: #2c7be5;
+}
+
+.files-status {
+    font-size: 13px;
+    color: #495057;
+    margin-bottom: 10px;
+}
+
+.documents-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.document-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 8px 10px;
+    background-color: #f8f9fa;
+}
+
+.document-info {
+    min-width: 0;
+}
+
+.document-name {
+    font-size: 14px;
+    font-weight: bold;
+    color: #212529;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 460px;
+}
+
+.document-meta {
+    font-size: 12px;
+    color: #6c757d;
+    margin-top: 2px;
+}
+
+.remove-file-button {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 50%;
+    background-color: #dc3545;
+    color: #fff;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.remove-file-button:hover {
+    background-color: #b02a37;
+}
+
 /* Drop zone styling */
 .drop-zone {
     border: 2px dashed #ccc;

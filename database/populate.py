@@ -166,7 +166,7 @@ def _build_chunks(units):
     return chunks
 
 
-def ingest_file(file_path, original_filename=None):
+def ingest_file(file_path, original_filename=None, size_bytes=0, page_count=None):
     create_schema()
     file_name = original_filename or os.path.basename(file_path)
     extension = os.path.splitext(file_name)[1].lower()
@@ -184,11 +184,11 @@ def ingest_file(file_path, original_filename=None):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO documents (filename, file_type, storage_path)
-                VALUES (%s, %s, %s)
+                INSERT INTO documents (filename, file_type, storage_path, size_bytes, page_count)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
-                (file_name, extension.lstrip("."), file_path),
+                (file_name, extension.lstrip("."), file_path, int(size_bytes or 0), page_count),
             )
             document_id = cursor.fetchone()[0]
 
@@ -206,6 +206,11 @@ def ingest_file(file_path, original_filename=None):
                         Json(chunk["metadata"]),
                     ),
                 )
+
+            cursor.execute(
+                "UPDATE documents SET chunk_count = %s WHERE id = %s;",
+                (len(chunks), document_id),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -215,13 +220,20 @@ def ingest_file(file_path, original_filename=None):
         "filename": file_name,
         "file_type": extension.lstrip("."),
         "chunks_inserted": len(chunks),
+        "size_bytes": int(size_bytes or 0),
+        "page_count": page_count,
     }
 
 
-def populate_table(file_path=None, filename=None):
+def populate_table(file_path=None, filename=None, size_bytes=0, page_count=None):
     """
     Backward-compatible wrapper used by the upload API.
     """
     if not file_path:
         raise ValueError("file_path is required for ingestion.")
-    return ingest_file(file_path=file_path, original_filename=filename)
+    return ingest_file(
+        file_path=file_path,
+        original_filename=filename,
+        size_bytes=size_bytes,
+        page_count=page_count,
+    )

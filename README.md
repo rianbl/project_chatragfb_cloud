@@ -14,6 +14,8 @@ The stack includes:
 - Parse file content into chunked document units
 - Persist documents/chunks in PostgreSQL
 - Build/refresh a FAISS vector store from chunked content
+- File context controls with maximum of 3 active files
+- Upload guardrails: max file size, max total corpus size, max PDF pages
 - Ask questions in natural language and get answers grounded in your data
 - Capture thumbs up/down feedback events
 
@@ -122,6 +124,22 @@ curl -X POST "http://localhost:5001/upload" \
   -F "file=@customer_data_0.csv"
 ```
 
+### List Context Files
+
+`GET /documents` on `http://localhost:5001/documents`
+
+```bash
+curl -X GET "http://localhost:5001/documents"
+```
+
+### Delete Context File
+
+`DELETE /documents/{id}` on `http://localhost:5001/documents/{id}`
+
+```bash
+curl -X DELETE "http://localhost:5001/documents/1"
+```
+
 ### Feedback
 
 `POST /feedback` on `http://localhost:5002/feedback`
@@ -142,6 +160,10 @@ curl -X POST "http://localhost:5002/feedback" \
   - `HF_MODEL_ID` (defaults to `Qwen/Qwen2.5-7B-Instruct`)
   - `HF_PROVIDER` (defaults to `auto`; use `hf-inference` only if the model is supported there)
   - `HF_TIMEOUT` (seconds, defaults to `60`)
+  - `MAX_DOCUMENTS` (defaults to `3`)
+  - `MAX_FILE_SIZE_BYTES` (defaults to `10485760` = 10MB)
+  - `MAX_TOTAL_SIZE_BYTES` (defaults to `31457280` = 30MB)
+  - `MAX_PDF_PAGES` (defaults to `150`)
 - Retrieval cache is built in-memory and can be refreshed via `/refresh`.
 - If no file has been uploaded yet, chat responses may indicate missing relevant data.
 

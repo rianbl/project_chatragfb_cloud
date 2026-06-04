@@ -1,6 +1,0 @@
-ID,Nome,Idade,Sexo,Endereco,Telefone,Email,Data_de_compra,Produto,Quantidade,Valor_Total
-6,Carla Lima,50,F,Rua Amazonas, 1415, (51) 96543-2109, carla@email.com, 2024-12-11, Ar-condicionado,1,2500
-7,Roberto Santos,60,M,Rua do Sol, 1617, (61) 95432-1098, roberto@email.com, 2024-12-09, Forno Elétrico,1,1200
-8,Juliana Rocha,33,F,Av. Rio Grande, 1819, (71) 94321-9876, juliana@email.com, 2024-12-06, Fogão,1,2200
-9,Marcelo Almeida,29,M,Rua Santos Dumont, 2021, (81) 93210-8765, marcelo@email.com, 2024-12-07, Cadeira,4,1000
-10,Patrícia Martins,40,F,Rua Goiás, 2223, (91) 92109-7654, patricia@email.com, 2024-12-05, Mesa,1,1500

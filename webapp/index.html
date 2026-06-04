@@ -22,13 +22,15 @@
                 <button onclick="sendMessage()">Send</button>
             </div>
         </div>
-        <div id="fileNameDisplay" style="font-weight: normal; text-align: center; margin-top: 10px;">
-            No data yet
+        <div class="files-panel">
+            <div class="files-header">
+                <span id="filesCounter">Context (0/3)</span>
+            </div>
+            <div id="documentsList" class="documents-list"></div>
         </div>        
-        <div class="upload-container">
-            <h3>Upload your data (CSV, TXT, PDF)</h3>
+        <div id="uploadContainer" class="upload-container">
             <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
-                Drag & Drop your file here
+                Drag & Drop your file here (CSV, TXT, PDF)
             </div>
             <input type="file" id="fileInput" onchange="uploadFile()" accept=".csv,.txt,.pdf" hidden>
             <button onclick="document.getElementById('fileInput').click()">Browse</button>
@@ -39,6 +41,6 @@
         <p>Uploading file, please wait...</p>
     </div>
     
-    <script src="script.js"></script>
+    <script src="script.js?v=20260604-1"></script>
 </body>
 </html>
