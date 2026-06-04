@@ -1,22 +1,12 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from logging import Logger
 from typing import Any
 
-from .contracts import ChatPort, DatabaseHealthPort, IngestionPort, RetrievalPort, UploadedFile
+from domain.models import AppLimits
 
-
-@dataclass(frozen=True)
-class AppLimits:
-    max_documents: int
-    max_file_size_bytes: int
-    max_total_size_bytes: int
-    max_pdf_pages: int
-    retrieval_top_k: int
-    embedding_model_id: str
-    upload_folder: str
+from .ports import ChatPort, DatabaseHealthPort, IngestionPort, RetrievalPort, UploadedFile
 
 
 class ContextService:
@@ -313,3 +303,4 @@ class StartupService:
             state["is_upload_blocked"],
         )
         self._logger.info("Readiness checks completed successfully.")
+

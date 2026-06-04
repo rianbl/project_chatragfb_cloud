@@ -212,3 +212,4 @@ class RagChatProcessor:
         assistant_response = self._prompt_builder.extract_assistant_response(f"{prompt}{generated_text}")
 
         return {"query": user_query, "response": assistant_response}
+

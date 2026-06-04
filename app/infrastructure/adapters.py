@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from modules.chat_module import get_chat_status, process_chat_query, startup_check_chat_client
-from modules.db import get_default_connection_factory
 from modules.ingestion import (
     build_file_path,
     create_schema,
@@ -15,7 +14,7 @@ from modules.ingestion import (
     uploaded_file_size_bytes,
     uploaded_pdf_page_count,
 )
-from modules.retrieval import get_default_retrieval_service
+from .runtime import get_default_connection_factory, get_default_retrieval_service
 
 
 class DefaultIngestionAdapter:

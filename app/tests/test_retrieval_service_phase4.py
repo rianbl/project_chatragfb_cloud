@@ -6,7 +6,7 @@ APP_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from modules.infrastructure.retrieval.faiss_service import FaissRetrievalService, RetrievalSettings
+from infrastructure.retrieval.faiss_service import FaissRetrievalService, RetrievalSettings
 
 
 class _FakeDoc:

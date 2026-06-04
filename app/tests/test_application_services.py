@@ -8,7 +8,7 @@ APP_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from modules.application.services import (
+from application.use_cases import (
     AppLimits,
     ChatService,
     ContextService,

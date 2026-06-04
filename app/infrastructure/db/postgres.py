@@ -30,3 +30,4 @@ class PostgresConnectionFactory:
 
 def build_default_postgres_factory(settings: PostgresSettings) -> PostgresConnectionFactory:
     return PostgresConnectionFactory(settings)
+

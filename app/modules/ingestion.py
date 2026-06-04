@@ -6,8 +6,8 @@ from pypdf import PdfReader
 from psycopg2.extras import Json, RealDictCursor
 
 from .config import CHUNK_OVERLAP, CHUNK_SIZE, SUPPORTED_EXTENSIONS, UPLOAD_FOLDER
-from .db import get_db_connection
 from .ingestion_parsers import build_default_parser_registry, extract_units
+from infrastructure.runtime import get_db_connection
 
 PARSER_REGISTRY = build_default_parser_registry()
 

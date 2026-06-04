@@ -186,3 +186,4 @@ def build_default_retrieval_service(
     settings = RetrievalSettings(embedding_model_id=embedding_model_id, top_k=top_k)
     data_source = PostgresChunkDataSource(connection_factory=connection_factory)
     return FaissRetrievalService(settings=settings, chunk_source=data_source)
+

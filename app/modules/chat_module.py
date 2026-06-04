@@ -5,15 +5,16 @@ import socket
 import requests
 from huggingface_hub import InferenceClient
 
-from .chat_core import (
+from domain.chat import (
     ChatPromptBuilder,
     FailoverChatGateway,
     IntentClassifier,
     RagChatProcessor,
     RetryPolicy,
 )
+from infrastructure.runtime import get_default_retrieval_service
+
 from .config import HF_API_TOKEN, HF_MODEL_ID, HF_PROVIDER, HF_TIMEOUT
-from .retrieval import query_context
 
 HF_CLIENTS = {}
 CHAT_PROCESSOR = None
@@ -158,7 +159,7 @@ def _get_chat_processor():
     if CHAT_PROCESSOR is None:
         CHAT_PROCESSOR = RagChatProcessor(
             intent_classifier=IntentClassifier(),
-            retrieval_fn=query_context,
+            retrieval_fn=get_default_retrieval_service().query_context,
             generation_gateway=_build_gateway(retries=2, delay=3),
             prompt_builder=ChatPromptBuilder(),
             system_message="",

@@ -80,3 +80,4 @@ class ChatPort(Protocol):
 class DatabaseHealthPort(Protocol):
     def check_connection(self) -> None:
         ...
+

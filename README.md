@@ -24,17 +24,14 @@ Browser (localhost:8080)
 ```text
 .
 |- app/
-|  |- modules/
-|  |  |- application/      # use-cases/services + ports adapters
-|  |  |- infrastructure/   # PostgreSQL/FAISS concrete implementations
-|  |  |- chat_core.py      # chat domain orchestration (intent/prompt/failover)
-|  |  |- chat_module.py    # HF adapter + compatibility facade
-|  |  |- ingestion.py
-|  |  |- ingestion_parsers.py
-|  |  |- retrieval.py      # compatibility facade over infrastructure retrieval service
-|  |  |- db.py             # compatibility facade over infrastructure db factory
+|  |- domain/              # regras de negocio puras (entidades, chat core)
+|  |- application/         # casos de uso + contratos (ports)
+|  |- infrastructure/      # adapters concretos para DB/retrieval/chat/ingestion
+|  |- interfaces/          # camada de entrada (HTTP/Flask)
+|  |- bootstrap/           # composition root / dependency wiring
+|  |- modules/             # modulos de dominio tecnico (chat, ingestion, config)
 |  |- static/      # frontend assets (HTML/CSS/JS)
-|  |- server.py    # unified Flask service entrypoint
+|  |- server.py    # entrypoint (create_app + startup)
 |  |- Dockerfile
 |  |- requirements.txt
 |  |- tests/       # phase-by-phase unit tests
