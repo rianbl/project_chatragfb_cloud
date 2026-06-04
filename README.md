@@ -24,11 +24,20 @@ Browser (localhost:8080)
 ```text
 .
 |- app/
-|  |- modules/     # chat, retrieval, ingestion, db/config helpers
+|  |- modules/
+|  |  |- application/      # use-cases/services + ports adapters
+|  |  |- infrastructure/   # PostgreSQL/FAISS concrete implementations
+|  |  |- chat_core.py      # chat domain orchestration (intent/prompt/failover)
+|  |  |- chat_module.py    # HF adapter + compatibility facade
+|  |  |- ingestion.py
+|  |  |- ingestion_parsers.py
+|  |  |- retrieval.py      # compatibility facade over infrastructure retrieval service
+|  |  |- db.py             # compatibility facade over infrastructure db factory
 |  |- static/      # frontend assets (HTML/CSS/JS)
 |  |- server.py    # unified Flask service entrypoint
 |  |- Dockerfile
 |  |- requirements.txt
+|  |- tests/       # phase-by-phase unit tests
 |- docker-compose.yaml
 |- .env.example
 ```

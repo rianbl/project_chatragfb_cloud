@@ -1,4 +1,3 @@
-import csv
 import os
 import re
 from datetime import datetime
@@ -8,6 +7,9 @@ from psycopg2.extras import Json, RealDictCursor
 
 from .config import CHUNK_OVERLAP, CHUNK_SIZE, SUPPORTED_EXTENSIONS, UPLOAD_FOLDER
 from .db import get_db_connection
+from .ingestion_parsers import build_default_parser_registry, extract_units
+
+PARSER_REGISTRY = build_default_parser_registry()
 
 
 def create_schema():
@@ -107,19 +109,6 @@ def safe_remove_file(path, upload_folder=UPLOAD_FOLDER):
         os.remove(absolute_path)
 
 
-def _read_text_with_fallback(file_path):
-    encodings = ("utf-8-sig", "utf-8", "latin-1")
-    for encoding in encodings:
-        try:
-            with open(file_path, "r", encoding=encoding, errors="strict") as source:
-                return source.read()
-        except UnicodeDecodeError:
-            continue
-
-    with open(file_path, "r", encoding="utf-8", errors="replace") as source:
-        return source.read()
-
-
 def _normalize_text(text):
     cleaned = re.sub(r"[ \t]+", " ", text)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -150,80 +139,8 @@ def _chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     return chunks
 
 
-def _extract_units_from_csv(file_path):
-    units = []
-    with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as source:
-        reader = csv.reader(source)
-        rows = [row for row in reader if any(cell.strip() for cell in row)]
-
-    if not rows:
-        return units
-
-    header_text = " | ".join(cell.strip() for cell in rows[0] if cell.strip())
-    for row_idx, row in enumerate(rows[1:], start=1):
-        row_text = " | ".join(cell.strip() for cell in row if cell.strip())
-        if not row_text:
-            continue
-        units.append(
-            {
-                "text": f"CSV header: {header_text}\nCSV row {row_idx}: {row_text}",
-                "metadata": {"source_type": "csv_row", "row_number": row_idx},
-            }
-        )
-
-    if not units and header_text:
-        units.append(
-            {
-                "text": f"CSV header: {header_text}",
-                "metadata": {"source_type": "csv_header"},
-            }
-        )
-    return units
-
-
-def _extract_units_from_txt(file_path):
-    text = _read_text_with_fallback(file_path)
-    blocks = [segment.strip() for segment in re.split(r"\n\s*\n", text) if segment.strip()]
-
-    if blocks:
-        return [
-            {
-                "text": block,
-                "metadata": {"source_type": "txt_block", "block_number": idx},
-            }
-            for idx, block in enumerate(blocks, start=1)
-        ]
-
-    normalized = _normalize_text(text)
-    if normalized:
-        return [{"text": normalized, "metadata": {"source_type": "txt_raw"}}]
-    return []
-
-
-def _extract_units_from_pdf(file_path):
-    reader = PdfReader(file_path)
-    units = []
-    for page_number, page in enumerate(reader.pages, start=1):
-        page_text = _normalize_text(page.extract_text() or "")
-        if not page_text:
-            continue
-        units.append(
-            {
-                "text": page_text,
-                "metadata": {"source_type": "pdf_page", "page_number": page_number},
-            }
-        )
-    return units
-
-
-def _extract_units(file_path, extension):
-    if extension == ".csv":
-        return _extract_units_from_csv(file_path)
-    if extension == ".txt":
-        return _extract_units_from_txt(file_path)
-    if extension == ".pdf":
-        return _extract_units_from_pdf(file_path)
-    raise ValueError(f"Unsupported file format: {extension}")
+def register_file_parser(extension, parser):
+    PARSER_REGISTRY.register(extension, parser)
 
 
 def _build_chunks(units):
@@ -255,7 +172,7 @@ def ingest_file(file_path, original_filename=None, size_bytes=0, page_count=None
         supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
         raise ValueError(f"Unsupported file extension: {extension}. Supported: {supported}")
 
-    units = _extract_units(file_path, extension)
+    units = extract_units(file_path, extension, registry=PARSER_REGISTRY)
     chunks = _build_chunks(units)
     if not chunks:
         raise ValueError("No readable content found in file.")

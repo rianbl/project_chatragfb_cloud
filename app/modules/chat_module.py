@@ -1,16 +1,22 @@
 import inspect
 import logging
-import re
 import socket
-import time
 
 import requests
 from huggingface_hub import InferenceClient
 
+from .chat_core import (
+    ChatPromptBuilder,
+    FailoverChatGateway,
+    IntentClassifier,
+    RagChatProcessor,
+    RetryPolicy,
+)
 from .config import HF_API_TOKEN, HF_MODEL_ID, HF_PROVIDER, HF_TIMEOUT
 from .retrieval import query_context
 
 HF_CLIENTS = {}
+CHAT_PROCESSOR = None
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +63,111 @@ def _get_hf_client(provider=None, force_recreate=False):
     return HF_CLIENTS[cache_key]
 
 
+class HFRouterProvider:
+    def generate(
+        self,
+        *,
+        prompt,
+        system_message,
+        user_query,
+        context,
+        max_new_tokens,
+        temperature,
+    ):
+        del prompt
+        url = "https://router.huggingface.co/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {HF_API_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        messages = ChatPromptBuilder.build_messages(system_message, user_query, context)
+        payload = {
+            "model": HF_MODEL_ID,
+            "messages": messages,
+            "max_tokens": max_new_tokens,
+            "temperature": temperature,
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=HF_TIMEOUT)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Router fallback failed ({response.status_code}): {response.text[:300]}"
+            )
+
+        body = response.json()
+        if isinstance(body, dict):
+            choices = body.get("choices") or []
+            if choices:
+                first = choices[0] or {}
+                message = first.get("message") or {}
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+
+        raise RuntimeError(f"Unexpected router fallback response format: {type(body).__name__}")
+
+
+class HFInferenceClientProvider:
+    def __init__(self, client_getter):
+        self._client_getter = client_getter
+
+    def generate(
+        self,
+        *,
+        prompt,
+        system_message,
+        user_query,
+        context,
+        max_new_tokens,
+        temperature,
+    ):
+        client = self._client_getter()
+        try:
+            generated_text = client.text_generation(
+                prompt=prompt,
+                model=HF_MODEL_ID,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+            )
+        except ValueError as exc:
+            if "Supported task: conversational" not in str(exc):
+                raise
+            messages = ChatPromptBuilder.build_messages(system_message, user_query, context)
+            completion = client.chat_completion(
+                model=HF_MODEL_ID,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_new_tokens,
+            )
+            generated_text = completion.choices[0].message.content
+        return generated_text
+
+
+def _build_gateway(retries=2, delay=3):
+    return FailoverChatGateway(
+        primary=HFRouterProvider(),
+        secondary=HFInferenceClientProvider(_get_hf_client),
+        retry_policy=RetryPolicy(retries=retries, delay_seconds=delay),
+        model_id=HF_MODEL_ID,
+        provider=HF_PROVIDER,
+        logger_instance=logger,
+    )
+
+
+def _get_chat_processor():
+    global CHAT_PROCESSOR
+    if CHAT_PROCESSOR is None:
+        CHAT_PROCESSOR = RagChatProcessor(
+            intent_classifier=IntentClassifier(),
+            retrieval_fn=query_context,
+            generation_gateway=_build_gateway(retries=2, delay=3),
+            prompt_builder=ChatPromptBuilder(),
+            system_message="",
+            temperature=0.2,
+            max_new_tokens=200,
+        )
+    return CHAT_PROCESSOR
+
+
 def _resolve_host(hostname):
     try:
         resolved = socket.getaddrinfo(hostname, 443)
@@ -77,41 +188,6 @@ def get_chat_status():
         },
     }
     return status
-
-
-def _query_hf_router_fallback(system_message, user_query, context, max_new_tokens, temperature):
-    url = "https://router.huggingface.co/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {HF_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    messages = [
-        {"role": "system", "content": system_message or "You are a helpful assistant."},
-        {"role": "user", "content": f"Using the context below, answer: {user_query}\n\nContext:\n{context}"},
-    ]
-    payload = {
-        "model": HF_MODEL_ID,
-        "messages": messages,
-        "max_tokens": max_new_tokens,
-        "temperature": temperature,
-    }
-    response = requests.post(url, headers=headers, json=payload, timeout=HF_TIMEOUT)
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Router fallback failed ({response.status_code}): {response.text[:300]}"
-        )
-
-    body = response.json()
-    if isinstance(body, dict):
-        choices = body.get("choices") or []
-        if choices:
-            first = choices[0] or {}
-            message = first.get("message") or {}
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-
-    raise RuntimeError(f"Unexpected router fallback response format: {type(body).__name__}")
 
 
 def startup_check_chat_client():
@@ -138,43 +214,8 @@ def startup_check_chat_client():
 
 
 def identify_intent(query):
-    greeting_keywords = ["ola", "oi", "bom dia", "boa tarde", "boa noite"]
-    small_talk_keywords = ["tudo bem", "como voce esta", "quem e voce", "o que voce faz"]
-
-    query_lower = query.lower()
-
-    if any(re.search(rf"\b{re.escape(word)}\b", query_lower) for word in greeting_keywords):
-        return "greeting"
-
-    if any(re.search(rf"\b{re.escape(word)}\b", query_lower) for word in small_talk_keywords):
-        return "small_talk"
-
-    return "data_query"
-
-
-def _call_hf_client(client, prompt, system_message, user_query, context, max_new_tokens, temperature):
-    try:
-        generated_text = client.text_generation(
-            prompt=prompt,
-            model=HF_MODEL_ID,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-        )
-    except ValueError as exc:
-        if "Supported task: conversational" not in str(exc):
-            raise
-        messages = [
-            {"role": "system", "content": system_message or "You are a helpful assistant."},
-            {"role": "user", "content": f"Using the context below, answer: {user_query}\n\nContext:\n{context}"},
-        ]
-        completion = client.chat_completion(
-            model=HF_MODEL_ID,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_new_tokens,
-        )
-        generated_text = completion.choices[0].message.content
-    return [{"generated_text": f"{prompt}{generated_text}"}]
+    classifier = IntentClassifier()
+    return classifier.identify(query)
 
 
 def query_hf_api(payload, retries=2, delay=3):
@@ -186,101 +227,17 @@ def query_hf_api(payload, retries=2, delay=3):
     max_new_tokens = int(parameters.get("max_length", 200))
     temperature = float(parameters.get("temperature", 0.2))
 
-    last_exception = None
-
-    for attempt in range(1, retries + 1):
-        try:
-            generated_text = _query_hf_router_fallback(
-                system_message,
-                user_query,
-                context,
-                max_new_tokens,
-                temperature,
-            )
-            return [{"generated_text": f"{prompt}{generated_text}"}]
-        except Exception as router_exc:  # noqa: BLE001
-            last_exception = router_exc
-            logger.error(
-                "Primary router call attempt %s/%s failed (model=%s): %s",
-                attempt,
-                retries,
-                HF_MODEL_ID,
-                router_exc,
-            )
-            try:
-                client = _get_hf_client()
-                return _call_hf_client(
-                    client,
-                    prompt,
-                    system_message,
-                    user_query,
-                    context,
-                    max_new_tokens,
-                    temperature,
-                )
-            except Exception as hf_client_exc:  # noqa: BLE001
-                last_exception = hf_client_exc
-                logger.error(
-                    "Secondary InferenceClient call attempt %s/%s failed (provider=%s, model=%s): %s",
-                    attempt,
-                    retries,
-                    HF_PROVIDER,
-                    HF_MODEL_ID,
-                    hf_client_exc,
-                )
-
-            if attempt < retries:
-                time.sleep(delay)
-
-    raise RuntimeError(
-        f"Failed to call chat inference after {retries} attempts "
-        f"(router_primary=True, provider={HF_PROVIDER}, model={HF_MODEL_ID}): {last_exception}"
-    ) from last_exception
+    gateway = _build_gateway(retries=retries, delay=delay)
+    generated_text = gateway.generate(
+        prompt=prompt,
+        system_message=system_message,
+        user_query=user_query,
+        context=context,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+    )
+    return [{"generated_text": f"{prompt}{generated_text}"}]
 
 
 def process_chat_query(user_query):
-    intent = identify_intent(user_query)
-
-    if intent == "greeting":
-        return {"query": user_query, "response": "Ola! Como posso ajudar com seus dados?"}
-
-    if intent == "small_talk":
-        return {
-            "query": user_query,
-            "response": "Sou um assistente focado em responder com base nos dados carregados.",
-        }
-
-    search_results = query_context(user_query)
-    if not search_results:
-        return {
-            "query": user_query,
-            "response": "Nao encontrei informacoes relacionadas a sua pergunta nos dados disponiveis.",
-        }
-
-    retrieved_content = "\n\n".join(item["content"] for item in search_results)
-    system_message = ""
-    inputs = (
-        f"System: {system_message}\n"
-        f"User: Using the context below, {user_query}\n"
-        f"Context: {retrieved_content}\n"
-        "Assistant:"
-    )
-
-    response = query_hf_api(
-        {
-            "inputs": inputs,
-            "system_message": system_message,
-            "user_query": user_query,
-            "context": retrieved_content,
-            "parameters": {"temperature": 0.2, "max_length": 200},
-        }
-    )
-
-    generated_text = response[0].get("generated_text", "")
-    assistant_response = (
-        generated_text.split("Assistant:", 1)[1].strip()
-        if "Assistant:" in generated_text
-        else generated_text.strip()
-    )
-
-    return {"query": user_query, "response": assistant_response}
+    return _get_chat_processor().process_query(user_query)
