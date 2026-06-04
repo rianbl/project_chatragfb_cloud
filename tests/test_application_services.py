@@ -4,7 +4,8 @@ import pathlib
 import sys
 import unittest
 
-APP_ROOT = pathlib.Path(__file__).resolve().parents[1]
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+APP_ROOT = PROJECT_ROOT / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -14,6 +15,7 @@ from application.use_cases import (
     ContextService,
     HealthService,
     QueryService,
+    StartupService,
 )
 
 
@@ -184,6 +186,47 @@ class ApplicationServicesPhase1Tests(unittest.TestCase):
 
         self.assertEqual(status_code, 400)
         self.assertIn("Unsupported file format", payload["error"])
+
+    def test_startup_service_runs_required_bootstrap_steps(self):
+        calls = []
+
+        class _Db:
+            def check_connection(self):
+                calls.append("db")
+
+        class _Ingestion(FakeIngestion):
+            def create_schema(self):
+                calls.append("schema")
+
+        class _Retrieval(FakeRetrieval):
+            def initialize_embeddings(self):
+                calls.append("embeddings")
+
+        class _Chat(FakeChat):
+            def startup_check_chat_client(self):
+                calls.append("chat")
+
+        class _Context:
+            def current_state(self):
+                calls.append("state")
+                return {
+                    "usage": {"document_count": 0, "total_size_bytes": 0},
+                    "is_upload_blocked": False,
+                }
+
+        startup = StartupService(
+            db_health=_Db(),
+            ingestion=_Ingestion(),
+            retrieval=_Retrieval(),
+            chat=_Chat(),
+            context=_Context(),
+            embedding_model_id="embed-model",
+            logger=self.logger,
+        )
+
+        startup.run()
+
+        self.assertEqual(calls, ["db", "schema", "embeddings", "chat", "state"])
 
 
 if __name__ == "__main__":
