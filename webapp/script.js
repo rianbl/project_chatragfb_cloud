@@ -8,6 +8,8 @@ let contextState = {
     is_upload_blocked: false,
     blocked_reasons: []
 };
+let contextPanelCollapsed = false;
+let contextUiStatus = 'idle';
 
 function setLoadingOverlayVisible(isVisible) {
     const loadingOverlay = document.getElementById('loadingOverlay');
@@ -15,6 +17,79 @@ function setLoadingOverlayVisible(isVisible) {
         return;
     }
     loadingOverlay.style.display = isVisible ? 'flex' : 'none';
+}
+
+function setContextPanelCollapsed(isCollapsed) {
+    const filesPanel = document.getElementById('filesPanel');
+    const toggleButton = document.getElementById('contextToggleButton');
+    if (!filesPanel || !toggleButton) {
+        return;
+    }
+
+    contextPanelCollapsed = Boolean(isCollapsed);
+    filesPanel.classList.toggle('is-collapsed', contextPanelCollapsed);
+    toggleButton.setAttribute('aria-expanded', String(!contextPanelCollapsed));
+    toggleButton.textContent = contextPanelCollapsed ? '▶' : '◀';
+    toggleButton.title = contextPanelCollapsed ? 'Expand context panel' : 'Collapse context panel';
+}
+
+function toggleContextPanel() {
+    setContextPanelCollapsed(!contextPanelCollapsed);
+}
+
+function getContextStatusIcon(documentCount) {
+    if (contextUiStatus === 'error') {
+        return '⚠️';
+    }
+    if (contextUiStatus === 'loading') {
+        return '⏳';
+    }
+    if (Number(documentCount || 0) > 0) {
+        return '📚';
+    }
+    return '📂';
+}
+
+function getFileTypeIcon(fileType) {
+    const normalizedType = String(fileType || '').toLowerCase();
+    if (normalizedType === 'pdf') {
+        return '📄';
+    }
+    if (normalizedType === 'csv') {
+        return '📊';
+    }
+    if (normalizedType === 'txt') {
+        return '📝';
+    }
+    return '📁';
+}
+
+function getDocumentDetail(doc) {
+    const normalizedType = String(doc.file_type || '').toLowerCase();
+
+    if (normalizedType === 'pdf') {
+        const pages = Number(doc.page_count || doc.pdf_pages_detected || 0);
+        if (pages > 0) {
+            return `${pages} ${pages === 1 ? 'page' : 'pages'}`;
+        }
+    }
+
+    if (normalizedType === 'csv') {
+        const rows = Number(doc.csv_rows || 0);
+        if (rows > 0) {
+            return `${rows} ${rows === 1 ? 'row' : 'rows'}`;
+        }
+    }
+
+    if (normalizedType === 'txt') {
+        const blocks = Number(doc.txt_blocks || 0);
+        if (blocks > 0) {
+            return `${blocks} ${blocks === 1 ? 'block' : 'blocks'}`;
+        }
+    }
+
+    const chunks = Number(doc.chunk_count || 0);
+    return `${chunks} ${chunks === 1 ? 'chunk' : 'chunks'}`;
 }
 
 async function getConfig() {
@@ -154,10 +229,18 @@ function renderContextState() {
     const currentDocuments = Number(usage.document_count || documents.length || 0);
 
     const filesCounter = document.getElementById('filesCounter');
+    const contextStatusIcon = document.getElementById('contextStatusIcon');
+    const contextDocsCount = document.getElementById('contextDocsCount');
     const documentsList = document.getElementById('documentsList');
     const uploadContainer = document.getElementById('uploadContainer');
 
     filesCounter.textContent = `Context (${currentDocuments}/${maxDocuments})`;
+    if (contextStatusIcon) {
+        contextStatusIcon.textContent = getContextStatusIcon(currentDocuments);
+    }
+    if (contextDocsCount) {
+        contextDocsCount.textContent = String(currentDocuments);
+    }
 
     documentsList.innerHTML = '';
     documents.forEach((doc) => {
@@ -167,17 +250,27 @@ function renderContextState() {
         const info = document.createElement('div');
         info.className = 'document-info';
 
+        const title = document.createElement('div');
+        title.className = 'document-title';
+
+        const icon = document.createElement('span');
+        icon.className = 'document-icon';
+        icon.textContent = getFileTypeIcon(doc.file_type);
+
         const name = document.createElement('div');
         name.className = 'document-name';
         name.textContent = doc.filename;
 
+        title.appendChild(icon);
+        title.appendChild(name);
+
         const meta = document.createElement('div');
         meta.className = 'document-meta';
-        const chunks = Number(doc.chunk_count || 0);
+        const detail = getDocumentDetail(doc);
         const sizeLabel = formatBytes(doc.size_bytes || 0);
-        meta.textContent = `${(doc.file_type || '').toUpperCase()} | ${chunks} chunks | ${sizeLabel}`;
+        meta.textContent = `${detail} | ${sizeLabel}`;
 
-        info.appendChild(name);
+        info.appendChild(title);
         info.appendChild(meta);
 
         const removeButton = document.createElement('button');
@@ -196,6 +289,9 @@ function renderContextState() {
 }
 
 async function loadContextState() {
+    contextUiStatus = 'loading';
+    renderContextState();
+
     try {
         const response = await fetch(`${dataApiBaseUrl}/documents`);
         if (!response.ok) {
@@ -203,6 +299,7 @@ async function loadContextState() {
         }
         const data = await response.json();
         contextState = data;
+        contextUiStatus = Number(data?.usage?.document_count || 0) > 0 ? 'ready' : 'idle';
     } catch (error) {
         console.error(error);
         contextState = {
@@ -212,6 +309,7 @@ async function loadContextState() {
             is_upload_blocked: false,
             blocked_reasons: []
         };
+        contextUiStatus = 'error';
     }
     renderContextState();
 }
@@ -221,6 +319,8 @@ async function deleteDocument(documentId) {
         return;
     }
 
+    contextUiStatus = 'loading';
+    renderContextState();
     setLoadingOverlayVisible(true);
 
     try {
@@ -231,11 +331,14 @@ async function deleteDocument(documentId) {
 
         if (!response.ok) {
             alert(body.error || 'Failed to remove document.');
+            contextUiStatus = 'error';
+            renderContextState();
             return;
         }
 
         if (body.context) {
             contextState = body.context;
+            contextUiStatus = Number(contextState?.usage?.document_count || 0) > 0 ? 'ready' : 'idle';
             renderContextState();
         } else {
             await loadContextState();
@@ -243,6 +346,8 @@ async function deleteDocument(documentId) {
     } catch (error) {
         console.error(error);
         alert('Failed to remove document.');
+        contextUiStatus = 'error';
+        renderContextState();
     } finally {
         setLoadingOverlayVisible(false);
     }
@@ -275,6 +380,8 @@ async function processFile(file) {
         return;
     }
 
+    contextUiStatus = 'loading';
+    renderContextState();
     const formData = new FormData();
     formData.append('file', file);
 
@@ -290,12 +397,14 @@ async function processFile(file) {
 
         if (!response.ok) {
             alert(body.error || 'Error processing file');
+            contextUiStatus = 'error';
             await loadContextState();
             return;
         }
 
         if (body.context) {
             contextState = body.context;
+            contextUiStatus = Number(contextState?.usage?.document_count || 0) > 0 ? 'ready' : 'idle';
             renderContextState();
         } else {
             await loadContextState();
@@ -305,6 +414,7 @@ async function processFile(file) {
     } catch (error) {
         console.error('Error:', error);
         alert('Failed to upload file');
+        contextUiStatus = 'error';
         await loadContextState();
     } finally {
         setLoadingOverlayVisible(false);
@@ -318,6 +428,16 @@ document.getElementById('userInput').addEventListener('keypress', function(event
 });
 
 (async function initializeApp() {
+    const toggleButton = document.getElementById('contextToggleButton');
+    const collapsedRail = document.getElementById('contextCollapsedRail');
+    if (toggleButton) {
+        toggleButton.addEventListener('click', toggleContextPanel);
+    }
+    if (collapsedRail) {
+        collapsedRail.addEventListener('click', () => setContextPanelCollapsed(false));
+    }
+    setContextPanelCollapsed(true);
+
     await getConfig();
     await loadContextState();
 })();

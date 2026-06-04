@@ -119,9 +119,27 @@ def _load_context_state():
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT id, filename, file_type, size_bytes, page_count, chunk_count, uploaded_at
-                FROM documents
-                ORDER BY uploaded_at DESC, id DESC;
+                SELECT
+                    d.id,
+                    d.filename,
+                    d.file_type,
+                    d.size_bytes,
+                    d.page_count,
+                    d.chunk_count,
+                    d.uploaded_at,
+                    COALESCE(stats.csv_rows, 0) AS csv_rows,
+                    COALESCE(stats.txt_blocks, 0) AS txt_blocks,
+                    COALESCE(stats.pdf_pages_detected, 0) AS pdf_pages_detected
+                FROM documents d
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(DISTINCT (c.metadata->>'row_number')) FILTER (WHERE c.metadata ? 'row_number') AS csv_rows,
+                        COUNT(DISTINCT (c.metadata->>'block_number')) FILTER (WHERE c.metadata ? 'block_number') AS txt_blocks,
+                        COUNT(DISTINCT (c.metadata->>'page_number')) FILTER (WHERE c.metadata ? 'page_number') AS pdf_pages_detected
+                    FROM chunks c
+                    WHERE c.document_id = d.id
+                ) stats ON TRUE
+                ORDER BY d.uploaded_at DESC, d.id DESC;
                 """
             )
             documents = [_to_jsonable_document(row) for row in cursor.fetchall()]

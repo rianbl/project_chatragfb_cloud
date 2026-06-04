@@ -15,25 +15,37 @@
     </header>
     
     <div class="chat-upload-wrapper">
-        <div class="chat-container">
-            <div class="chat-display" id="chatDisplay"></div>
-            <div class="chat-input">
-                <input type="text" id="userInput" placeholder="Ask me about your data...">
-                <button onclick="sendMessage()">Send</button>
+        <div class="workspace-row">
+            <div id="filesPanel" class="files-panel is-collapsed">
+                <div id="contextCollapsedRail" class="context-collapsed-rail" title="Expand context panel">
+                    <span id="contextStatusIcon" class="context-rail-icon">📂</span>
+                    <span id="contextDocsCount" class="context-rail-count">0</span>
+                    <span class="context-rail-menu">☰</span>
+                </div>
+                <div class="context-open-content">
+                    <div class="files-header">
+                        <span id="filesCounter">Context (0/3)</span>
+                        <button id="contextToggleButton" class="context-toggle-button" type="button" aria-expanded="false" title="Expand context panel">▶</button>
+                    </div>
+                    <div id="documentsList" class="documents-list"></div>
+                </div>
             </div>
-        </div>
-        <div class="files-panel">
-            <div class="files-header">
-                <span id="filesCounter">Context (0/3)</span>
+            <div class="chat-column">
+                <div class="chat-container">
+                    <div class="chat-display" id="chatDisplay"></div>
+                    <div class="chat-input">
+                        <input type="text" id="userInput" placeholder="Ask me about your data...">
+                        <button onclick="sendMessage()">Send</button>
+                    </div>
+                </div>
+                <div id="uploadContainer" class="upload-container">
+                    <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
+                        Drag & Drop your file here (CSV, TXT, PDF)
+                    </div>
+                    <input type="file" id="fileInput" onchange="uploadFile()" accept=".csv,.txt,.pdf" hidden>
+                    <button onclick="document.getElementById('fileInput').click()">Browse</button>
+                </div>
             </div>
-            <div id="documentsList" class="documents-list"></div>
-        </div>        
-        <div id="uploadContainer" class="upload-container">
-            <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
-                Drag & Drop your file here (CSV, TXT, PDF)
-            </div>
-            <input type="file" id="fileInput" onchange="uploadFile()" accept=".csv,.txt,.pdf" hidden>
-            <button onclick="document.getElementById('fileInput').click()">Browse</button>
         </div>
     </div>
     <div id="loadingOverlay" class="loading-overlay">
@@ -41,6 +53,6 @@
         <p>Uploading file, please wait...</p>
     </div>
     
-    <script src="script.js?v=20260604-1"></script>
+    <script src="script.js?v=20260604-3"></script>
 </body>
 </html>
