@@ -91,6 +91,7 @@ class FakeChat:
             "token_present": True,
             "dns": {"api_inference": {"ok": True}, "router": {"ok": False}},
         }
+        self.last_context = None
 
     def get_chat_status(self):
         return self.status
@@ -98,7 +99,8 @@ class FakeChat:
     def startup_check_chat_client(self):
         return None
 
-    def process_chat_query(self, user_query):
+    def process_chat_query(self, user_query, conversation_context=""):
+        self.last_context = conversation_context
         return {"query": user_query, "response": "ok"}
 
 
@@ -160,6 +162,15 @@ class ApplicationServicesPhase1Tests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             service.execute("")
+
+    def test_chat_service_forwards_conversation_context(self):
+        fake_chat = FakeChat()
+        service = ChatService(chat=fake_chat)
+
+        payload = service.execute("resuma isso", conversation_context="contexto anterior")
+
+        self.assertEqual(payload["response"], "ok")
+        self.assertEqual(fake_chat.last_context, "contexto anterior")
 
     def test_health_service_degraded_when_db_is_down(self):
         health = HealthService(

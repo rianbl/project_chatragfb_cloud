@@ -35,16 +35,26 @@ def create_app() -> Flask:
     app = Flask(__name__, static_folder="../../static", static_url_path="")
     CORS(app)
 
-    app.logger.setLevel(logging.INFO)
-    log_formatter = logging.Formatter("%(asctime)s - %(message)s")
+    log_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    # Configure root logger to capture logs from all modules
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Clear existing handlers to avoid duplicates
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
 
     log_handler = logging.StreamHandler()
     log_handler.setLevel(logging.INFO)
     log_handler.setFormatter(log_formatter)
-    app.logger.addHandler(log_handler)
+    root_logger.addHandler(log_handler)
 
     log_messages: list[str] = []
-    app.logger.addHandler(ListHandler(log_messages, log_formatter))
+    root_logger.addHandler(ListHandler(log_messages, log_formatter))
+
+    # Ensure app.logger also uses the same level
+    app.logger.setLevel(logging.INFO)
 
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 

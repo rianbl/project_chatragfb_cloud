@@ -24,3 +24,9 @@ HF_MODEL_ID = os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
 HF_PROVIDER = os.getenv("HF_PROVIDER", "auto").strip()
 HF_TIMEOUT = float(os.getenv("HF_TIMEOUT", "60"))
 HF_API_TOKEN = os.getenv("HF_API_TOKEN", "").strip()
+
+APP_ROOT = os.path.dirname(os.path.dirname(__file__))
+PROMPT_STORE_PATH = os.getenv(
+    "PROMPT_STORE_PATH",
+    os.path.join(APP_ROOT, "config", "prompt_store.yaml"),
+)

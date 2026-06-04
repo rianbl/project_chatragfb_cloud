@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from flask import jsonify, request, send_from_directory
 
-from bootstrap.container import ServiceContainer
+if TYPE_CHECKING:
+    from bootstrap.container import ServiceContainer
 
 
-def register_routes(app, container: ServiceContainer, log_messages: list[str]) -> None:
+def register_routes(app, container: "ServiceContainer", log_messages: list[str]) -> None:
     @app.route("/", methods=["GET"])
     def root():
         return send_from_directory(app.static_folder, "index.html")
@@ -62,11 +64,18 @@ def register_routes(app, container: ServiceContainer, log_messages: list[str]) -
     def chat():
         payload = request.json or {}
         user_query = (payload.get("query") or "").strip()
+        raw_context = payload.get("conversation_context", "")
+        if isinstance(raw_context, list):
+            conversation_context = "\n".join(str(item) for item in raw_context)
+        elif raw_context is None:
+            conversation_context = ""
+        else:
+            conversation_context = str(raw_context)
         if not user_query:
             return jsonify({"error": "Query cannot be empty."}), 400
 
         try:
-            return jsonify(container.chat_service.execute(user_query)), 200
+            return jsonify(container.chat_service.execute(user_query, conversation_context=conversation_context)), 200
         except ValueError as exc:
             app.logger.warning("Chat validation error: %s", exc)
             return jsonify({"error": str(exc)}), 400
@@ -111,4 +120,3 @@ def register_routes(app, container: ServiceContainer, log_messages: list[str]) -
         if os.path.isfile(file_path):
             return send_from_directory(app.static_folder, path)
         return send_from_directory(app.static_folder, "index.html")
-

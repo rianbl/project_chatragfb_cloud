@@ -214,10 +214,10 @@ class ChatService:
     def __init__(self, chat: ChatPort) -> None:
         self._chat = chat
 
-    def execute(self, user_query: str) -> dict[str, Any]:
+    def execute(self, user_query: str, conversation_context: str = "") -> dict[str, Any]:
         if not user_query:
             raise ValueError("Query cannot be empty.")
-        return self._chat.process_chat_query(user_query)
+        return self._chat.process_chat_query(user_query, conversation_context=conversation_context)
 
 
 class HealthService:
@@ -303,4 +303,3 @@ class StartupService:
             state["is_upload_blocked"],
         )
         self._logger.info("Readiness checks completed successfully.")
-

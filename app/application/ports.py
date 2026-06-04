@@ -73,11 +73,10 @@ class ChatPort(Protocol):
     def startup_check_chat_client(self) -> None:
         ...
 
-    def process_chat_query(self, user_query: str) -> dict[str, Any]:
+    def process_chat_query(self, user_query: str, conversation_context: str = "") -> dict[str, Any]:
         ...
 
 
 class DatabaseHealthPort(Protocol):
     def check_connection(self) -> None:
         ...
-

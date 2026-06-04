@@ -92,8 +92,8 @@ class DefaultChatAdapter:
     def startup_check_chat_client(self) -> None:
         startup_check_chat_client()
 
-    def process_chat_query(self, user_query: str) -> dict[str, Any]:
-        return process_chat_query(user_query)
+    def process_chat_query(self, user_query: str, conversation_context: str = "") -> dict[str, Any]:
+        return process_chat_query(user_query, conversation_context=conversation_context)
 
 
 class DefaultDatabaseHealthAdapter:

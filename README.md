@@ -13,6 +13,7 @@ The deployment now uses **two services only**:
 Browser (localhost:8080)
   -> app service (Flask)
        -> /upload, /documents, /query, /chat, /feedback
+       -> Chat workflow: Router -> (Retriever?) -> Responder
        -> in-memory FAISS index (built from PostgreSQL chunks)
        -> Hugging Face Inference API for final answer generation
   -> postgres (localhost:5432)
@@ -34,8 +35,8 @@ Browser (localhost:8080)
 |  |- server.py    # entrypoint (create_app + startup)
 |  |- Dockerfile
 |  |- requirements.txt
-|  |- tests/       # phase-by-phase unit tests
 |- docker-compose.yaml
+|- tests/          # unit tests
 |- .env.example
 ```
 
@@ -97,8 +98,13 @@ All endpoints are served by `app` on `http://localhost:8080`.
 ```bash
 curl -X POST "http://localhost:8080/chat" \
   -H "Content-Type: application/json" \
-  -d '{"query":"What did Patricia buy?"}'
+  -d '{
+    "query":"What did Patricia buy?",
+    "conversation_context":"User asked about purchases in the uploaded report."
+  }'
 ```
+
+`conversation_context` is optional (string or list of strings).
 
 ### Retrieval Query
 
@@ -157,6 +163,7 @@ Optional model/runtime vars:
 - `HF_MODEL_ID`
 - `HF_PROVIDER`
 - `HF_TIMEOUT`
+- `PROMPT_STORE_PATH` (default: `app/config/prompt_store.yaml`)
 - `EMBEDDING_MODEL_ID`
 - `RETRIEVAL_TOP_K`
 - `CHUNK_SIZE`
