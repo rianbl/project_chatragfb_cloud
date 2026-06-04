@@ -1,5 +1,5 @@
-from .ports import ChatPort, DatabaseHealthPort, IngestionPort, RetrievalPort, UploadedFile
-from .use_cases import ChatService, ContextService, HealthService, QueryService, StartupService
+from .ports import ChatPort, DatabaseHealthPort, IngestionPort, McpPort, RetrievalPort, UploadedFile
+from .use_cases import ChatService, ContextService, HealthService, McpService, QueryService, StartupService
 
 __all__ = [
     "ChatPort",
@@ -8,9 +8,10 @@ __all__ = [
     "DatabaseHealthPort",
     "HealthService",
     "IngestionPort",
+    "McpPort",
+    "McpService",
     "QueryService",
     "RetrievalPort",
     "StartupService",
     "UploadedFile",
 ]
-

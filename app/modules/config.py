@@ -20,6 +20,10 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "all-MiniLM-L6-v2")
 
+MCP_SERVER_ENABLED = os.getenv("MCP_SERVER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://mcp-server:8090").strip()
+MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "10"))
+
 HF_MODEL_ID = os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
 HF_PROVIDER = os.getenv("HF_PROVIDER", "auto").strip()
 HF_TIMEOUT = float(os.getenv("HF_TIMEOUT", "60"))

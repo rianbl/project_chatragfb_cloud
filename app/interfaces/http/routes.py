@@ -90,6 +90,37 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
                 )
             return jsonify({"error": f"Chat processing failed: {error_text}"}), 502
 
+    @app.route("/mcp/health", methods=["GET"])
+    def mcp_health():
+        mcp_service = getattr(container, "mcp_service", None)
+        if mcp_service is None:
+            return jsonify({"error": "MCP service not configured."}), 501
+        return jsonify(mcp_service.status()), 200
+
+    @app.route("/mcp/tools", methods=["GET"])
+    def mcp_tools():
+        mcp_service = getattr(container, "mcp_service", None)
+        if mcp_service is None:
+            return jsonify({"error": "MCP service not configured."}), 501
+        return jsonify({"tools": mcp_service.list_tools()}), 200
+
+    @app.route("/mcp/tools/<path:tool_name>", methods=["POST"])
+    def mcp_execute_tool(tool_name: str):
+        mcp_service = getattr(container, "mcp_service", None)
+        if mcp_service is None:
+            return jsonify({"error": "MCP service not configured."}), 501
+        payload = request.json or {}
+        arguments = payload.get("arguments", {})
+        if not isinstance(arguments, dict):
+            return jsonify({"error": "Field 'arguments' must be an object."}), 400
+        try:
+            return jsonify(mcp_service.execute_tool(tool_name, arguments=arguments)), 200
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("MCP tool execution failed.")
+            return jsonify({"error": str(exc)}), 502
+
     @app.route("/feedback", methods=["POST"])
     def feedback():
         data = request.get_json(silent=True) or {}

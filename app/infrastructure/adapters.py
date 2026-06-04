@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from modules.chat_module import get_chat_status, process_chat_query, startup_check_chat_client
+from modules.config import MCP_SERVER_ENABLED, MCP_SERVER_URL, MCP_TIMEOUT
 from modules.ingestion import (
     build_file_path,
     create_schema,
@@ -14,7 +16,10 @@ from modules.ingestion import (
     uploaded_file_size_bytes,
     uploaded_pdf_page_count,
 )
+from .mcp import McpHttpClient, McpServerSettings
 from .runtime import get_default_connection_factory, get_default_retrieval_service
+
+logger = logging.getLogger(__name__)
 
 
 class DefaultIngestionAdapter:
@@ -109,3 +114,58 @@ class DefaultDatabaseHealthAdapter:
                 cursor.fetchone()
         finally:
             conn.close()
+
+
+class DefaultMcpAdapter:
+    def __init__(self, client: McpHttpClient | None = None) -> None:
+        self._client = client or McpHttpClient(
+            McpServerSettings(
+                enabled=MCP_SERVER_ENABLED,
+                base_url=MCP_SERVER_URL,
+                timeout_seconds=MCP_TIMEOUT,
+            )
+        )
+
+    def get_mcp_status(self) -> dict[str, Any]:
+        if not self._client.enabled:
+            return {
+                "enabled": False,
+                "reachable": False,
+                "base_url": self._client.base_url,
+                "error": None,
+            }
+
+        try:
+            payload = self._client.health()
+            return {
+                "enabled": True,
+                "reachable": payload.get("status") == "ok",
+                "base_url": self._client.base_url,
+                "error": None,
+                "server": payload,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "enabled": True,
+                "reachable": False,
+                "base_url": self._client.base_url,
+                "error": str(exc),
+            }
+
+    def startup_check_mcp_client(self) -> None:
+        status = self.get_mcp_status()
+        if not status.get("enabled"):
+            logger.info("MCP integration is disabled.")
+            return
+        if status.get("reachable"):
+            logger.info("MCP server connectivity check succeeded.")
+        else:
+            logger.warning("MCP server connectivity check failed: %s", status.get("error"))
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        if not self._client.enabled:
+            return []
+        return self._client.list_tools()
+
+    def execute_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._client.execute_tool(tool_name, arguments=arguments)

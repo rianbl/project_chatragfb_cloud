@@ -6,7 +6,7 @@ from typing import Any
 
 from domain.models import AppLimits
 
-from .ports import ChatPort, DatabaseHealthPort, IngestionPort, RetrievalPort, UploadedFile
+from .ports import ChatPort, DatabaseHealthPort, IngestionPort, McpPort, RetrievalPort, UploadedFile
 
 
 class ContextService:
@@ -220,16 +220,32 @@ class ChatService:
         return self._chat.process_chat_query(user_query, conversation_context=conversation_context)
 
 
+class McpService:
+    def __init__(self, mcp: McpPort) -> None:
+        self._mcp = mcp
+
+    def status(self) -> dict[str, Any]:
+        return self._mcp.get_mcp_status()
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        return self._mcp.list_tools()
+
+    def execute_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._mcp.execute_tool(tool_name, arguments=arguments)
+
+
 class HealthService:
     def __init__(
         self,
         db_health: DatabaseHealthPort,
         retrieval: RetrievalPort,
         chat: ChatPort,
+        mcp: McpPort | None = None,
     ) -> None:
         self._db_health = db_health
         self._retrieval = retrieval
         self._chat = chat
+        self._mcp = mcp
 
     def execute(self) -> tuple[dict[str, Any], int]:
         try:
@@ -242,6 +258,21 @@ class HealthService:
 
         retrieval_status = self._retrieval.get_retrieval_status()
         chat_status = self._chat.get_chat_status()
+        if self._mcp is None:
+            mcp_status = {
+                "enabled": False,
+                "reachable": False,
+                "error": "MCP adapter not configured.",
+            }
+        else:
+            try:
+                mcp_status = self._mcp.get_mcp_status()
+            except Exception as exc:  # noqa: BLE001
+                mcp_status = {
+                    "enabled": True,
+                    "reachable": False,
+                    "error": str(exc),
+                }
         chat_ready = chat_status["token_present"] and (
             chat_status["dns"]["api_inference"]["ok"] or chat_status["dns"]["router"]["ok"]
         )
@@ -254,6 +285,7 @@ class HealthService:
                 "database": {"ok": db_ok, "error": db_error},
                 "retrieval": retrieval_status,
                 "chat": chat_status,
+                "mcp": mcp_status,
             },
             status_code,
         )
@@ -269,6 +301,7 @@ class StartupService:
         context: ContextService,
         embedding_model_id: str,
         logger: Logger,
+        mcp: McpPort | None = None,
     ) -> None:
         self._db_health = db_health
         self._ingestion = ingestion
@@ -277,6 +310,7 @@ class StartupService:
         self._context = context
         self._embedding_model_id = embedding_model_id
         self._logger = logger
+        self._mcp = mcp
 
     def run(self) -> None:
         self._logger.info("Starting app readiness checks.")
@@ -294,6 +328,10 @@ class StartupService:
         self._logger.info("Initializing chat inference client and DNS checks.")
         self._chat.startup_check_chat_client()
         self._logger.info("Chat inference startup checks completed.")
+        if self._mcp is not None:
+            self._logger.info("Checking MCP server connectivity.")
+            self._mcp.startup_check_mcp_client()
+            self._logger.info("MCP startup checks completed.")
 
         state = self._context.current_state()
         self._logger.info(

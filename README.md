@@ -4,18 +4,23 @@ A containerized Retrieval-Augmented Generation (RAG) application that ingests CS
 
 ## Runtime Architecture
 
-The deployment now uses **two services only**:
+The deployment now uses **three services**:
 
 - `app`: unified application service (frontend + upload/ingestion + retrieval + chat + feedback)
 - `postgres`: database service (persistent storage for documents/chunks)
+- `mcp-server`: MCP-capable tool service (filesystem now, evolutive registry for future git/db/http tools)
 
 ```text
 Browser (localhost:8080)
   -> app service (Flask)
        -> /upload, /documents, /query, /chat, /feedback
+       -> MCP client module (HTTP) for /mcp/* and future tool-aware orchestration
        -> Chat workflow: Router -> (Retriever?) -> Responder
        -> in-memory FAISS index (built from PostgreSQL chunks)
        -> Hugging Face Inference API for final answer generation
+  -> mcp-server (localhost:8090)
+       -> tool registry namespaces: filesystem.*, git.*, db.*, http.*
+       -> filesystem tools proxied to official prebuilt filesystem MCP server package
   -> postgres (localhost:5432)
        -> documents + chunks tables
 ```
@@ -85,6 +90,7 @@ http://localhost:8080
 | Service | Container Port | Host Port | Purpose |
 |---|---:|---:|---|
 | `app` | 8080 | 8080 | Frontend + APIs |
+| `mcp-server` | 8090 | 8090 | MCP HTTP transport + tool registry |
 | `postgres` | 5432 | 5432 | PostgreSQL |
 
 ## API Reference
@@ -151,6 +157,22 @@ curl -X POST "http://localhost:8080/feedback" \
   -d '{"feedback_type":"thumbsUp","message":"Great answer"}'
 ```
 
+### MCP Integration (App API)
+
+`GET /mcp/health` - MCP connectivity and status
+
+`GET /mcp/tools` - list registered namespaced tools
+
+`POST /mcp/tools/{tool_name}` - execute one tool
+
+Example:
+
+```bash
+curl -X POST "http://localhost:8080/mcp/tools/filesystem.list_directory" \
+  -H "Content-Type: application/json" \
+  -d '{"arguments":{"path":"."}}'
+```
+
 ## Configuration
 
 Main variables:
@@ -163,6 +185,9 @@ Optional model/runtime vars:
 - `HF_MODEL_ID`
 - `HF_PROVIDER`
 - `HF_TIMEOUT`
+- `MCP_SERVER_ENABLED`
+- `MCP_SERVER_URL`
+- `MCP_TIMEOUT`
 - `PROMPT_STORE_PATH` (default: `app/config/prompt_store.yaml`)
 - `EMBEDDING_MODEL_ID`
 - `RETRIEVAL_TOP_K`

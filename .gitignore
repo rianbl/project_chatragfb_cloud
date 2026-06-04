@@ -17,6 +17,10 @@ pydeps/
 __pycache__/
 *.py[cod]
 
+# Node artifacts
+mcp-server/node_modules/
+mcp-server/dist/
+
 # Local ad-hoc smoke/verification scripts
 tmp_*.py
 tmp_*.csv

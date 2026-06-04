@@ -80,3 +80,17 @@ class ChatPort(Protocol):
 class DatabaseHealthPort(Protocol):
     def check_connection(self) -> None:
         ...
+
+
+class McpPort(Protocol):
+    def get_mcp_status(self) -> dict[str, Any]:
+        ...
+
+    def startup_check_mcp_client(self) -> None:
+        ...
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        ...
+
+    def execute_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        ...
