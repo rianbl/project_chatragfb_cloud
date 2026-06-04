@@ -5,6 +5,7 @@ secrets/
 
 # Runtime/temp artifacts
 uploads/
+app/uploads/
 data/
 
 # Local Python environments/dependencies

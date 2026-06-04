@@ -1,5 +1,5 @@
-let apiUrl = 'http://localhost:8081/chat';
-const dataApiBaseUrl = 'http://localhost:5001';
+let apiUrl = '/chat';
+const dataApiBaseUrl = '';
 
 let contextState = {
     documents: [],
@@ -95,7 +95,7 @@ function getDocumentDetail(doc) {
 async function getConfig() {
     const response = await fetch('config.json');
     if (!response.ok) {
-        console.error('Failed to load configuration');
+        // Keep default same-origin API routes when config is not available.
         return;
     }
     const config = await response.json();
@@ -160,7 +160,9 @@ async function sendMessage() {
             const data = await response.json();
             appendMessage('model', data.response || 'Erro: Resposta inválida.');
         } else {
-            appendMessage('model', 'Erro ao se conectar com a API.');
+            const errorBody = await response.json().catch(() => ({}));
+            const errorMessage = errorBody.error || `Erro da API (status ${response.status}).`;
+            appendMessage('model', errorMessage);
         }
     } catch (error) {
         appendMessage('model', 'Erro: Não foi possível completar a requisição.');
@@ -174,7 +176,7 @@ async function handleThumbClick(messageContent, thumbType) {
     };
 
     try {
-        const response = await fetch('http://localhost:5002/feedback', {
+        const response = await fetch(`${dataApiBaseUrl}/feedback`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -185,7 +187,8 @@ async function handleThumbClick(messageContent, thumbType) {
         if (response.ok) {
             console.log('Feedback sent successfully');
         } else {
-            console.error('Error sending feedback');
+            const errorBody = await response.json().catch(() => ({}));
+            console.error('Error sending feedback', response.status, errorBody);
         }
     } catch (error) {
         console.error('Error:', error);

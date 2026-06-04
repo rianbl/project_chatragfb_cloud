@@ -1,7 +1,0 @@
-psycopg2-binary
-Flask
-Flask-CORS
-Werkzeug
-pandas
-requests
-pypdf

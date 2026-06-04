@@ -1,7 +1,0 @@
-Flask
-psycopg2-binary
-langchain
-langchain-community
-sentence-transformers
-faiss-cpu
-huggingface_hub

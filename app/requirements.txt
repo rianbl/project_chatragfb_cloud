@@ -1,0 +1,13 @@
+Flask==2.3.3
+Flask-CORS==4.0.1
+requests==2.31.0
+psycopg2-binary==2.9.9
+pypdf==4.2.0
+langchain==0.2.7
+langchain-community==0.2.7
+sentence-transformers==2.7.0
+transformers==4.41.2
+tokenizers==0.19.1
+huggingface_hub==0.23.4
+torch==2.2.2+cpu
+faiss-cpu==1.8.0
