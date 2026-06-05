@@ -75,7 +75,7 @@ function setMemoryPanelCollapsed(isCollapsed) {
     memoryPanel.classList.toggle('is-collapsed', memoryPanelCollapsed);
     toggleButton.setAttribute('aria-expanded', String(!memoryPanelCollapsed));
     toggleButton.textContent = memoryPanelCollapsed ? '▶' : '◀';
-    toggleButton.title = memoryPanelCollapsed ? 'Expand memory graph panel' : 'Collapse memory graph panel';
+    toggleButton.title = memoryPanelCollapsed ? 'Expand knowledge graph panel' : 'Collapse knowledge graph panel';
 
     if (memoryPanelCollapsed) {
         stopMemoryGraphStream();
@@ -419,8 +419,8 @@ function renderMemoryGraphSvg(nodes, edges) {
         const empty = document.createElement('div');
         empty.className = 'memory-graph-empty';
         empty.textContent = memoryUiStatus === 'loading'
-            ? 'Loading memory graph...'
-            : 'Memory graph is empty. Ask the assistant to remember facts to populate it.';
+            ? 'Loading knowledge graph...'
+            : 'Knowledge graph is empty. Ask the assistant to remember facts to populate it.';
         canvas.appendChild(empty);
         return;
     }
@@ -547,7 +547,7 @@ function renderMemoryGraphState() {
     const nodesCount = document.getElementById('memoryNodesCount');
 
     if (counter) {
-        counter.textContent = 'Memory Graph';
+        counter.textContent = 'Knowledge Graph';
     }
     if (statusIcon) {
         statusIcon.textContent = getMemoryStatusIcon(nodes.length);
