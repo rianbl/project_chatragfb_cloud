@@ -8,7 +8,7 @@ The deployment now uses **three services**:
 
 - `app`: unified application service (frontend + upload/ingestion + retrieval + chat + feedback)
 - `postgres`: database service (persistent storage for documents/chunks)
-- `mcp-server`: MCP-capable tool service (filesystem now, evolutive registry for future git/db/http tools)
+- `mcp-server`: MCP-capable tool service focused on filesystem tools
 
 ```text
 Browser (localhost:8080)
@@ -19,7 +19,7 @@ Browser (localhost:8080)
        -> in-memory FAISS index (built from PostgreSQL chunks)
        -> Hugging Face Inference API for final answer generation
   -> mcp-server (localhost:8090)
-       -> tool registry namespaces: filesystem.*, git.*, db.*, http.*
+       -> tool registry namespace: filesystem.*
        -> filesystem tools proxied to official prebuilt filesystem MCP server package
   -> postgres (localhost:5432)
        -> documents + chunks tables

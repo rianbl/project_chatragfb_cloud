@@ -1,10 +1,7 @@
 import { ToolRegistry } from "./core/toolRegistry";
 import { createHttpApp } from "./transport/http";
-import { registerDbTools } from "./tools/db";
 import { registerFilesystemTools } from "./tools/filesystem";
 import { FilesystemMcpBridge } from "./tools/filesystem/backend";
-import { registerGitTools } from "./tools/git";
-import { registerHttpTools } from "./tools/http";
 import { resolveFilesystemRoot } from "./utils/fsRoot";
 import { logger } from "./utils/logger";
 
@@ -25,9 +22,6 @@ async function bootstrap(): Promise<void> {
 
   const registry = new ToolRegistry();
   registerFilesystemTools(registry, filesystemBridge);
-  registerGitTools(registry);
-  registerDbTools(registry);
-  registerHttpTools(registry);
 
   const app = createHttpApp({ registry });
   app.listen(httpPort, () => {
