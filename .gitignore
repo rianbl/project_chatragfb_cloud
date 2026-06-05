@@ -25,3 +25,5 @@ mcp-server/dist/
 # Local ad-hoc smoke/verification scripts
 tmp_*.py
 tmp_*.csv
+
+.pytest_cache

@@ -87,6 +87,25 @@ docker compose up --build
 http://localhost:8080
 ```
 
+## Local Unit Tests (without Docker)
+
+In WSL/Linux, create an isolated environment and install test dependencies:
+
+```bash
+cd /mnt/c/Users/rianb/linux/project_chatragfb_cloud
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+If you want full runtime dependencies locally (same base as container image), use:
+
+```bash
+python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r app/requirements.txt
+```
+
 ## Services and Ports
 
 | Service | Container Port | Host Port | Purpose |
