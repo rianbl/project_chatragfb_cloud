@@ -56,6 +56,7 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
                         continue
 
     memory_graph_events = _MemoryGraphEventHub()
+    INTERNAL_MEMORY_ENTITY_NAMES = {"session_memory"}
 
     def _as_memory_graph(raw: Any) -> dict[str, list[dict[str, Any]]]:
         if not isinstance(raw, dict):
@@ -91,10 +92,29 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
     def _build_graph_view(graph: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         entities = graph.get("entities", [])
         relations = graph.get("relations", [])
+        filtered_entities: list[dict[str, Any]] = []
+        for entity in entities:
+            name = str(entity.get("name", "")).strip()
+            if not name:
+                continue
+            if name.lower() in INTERNAL_MEMORY_ENTITY_NAMES:
+                continue
+            filtered_entities.append(entity)
+
+        filtered_relations: list[dict[str, Any]] = []
+        for relation in relations:
+            source = str(relation.get("from", "")).strip()
+            target = str(relation.get("to", "")).strip()
+            if not source or not target:
+                continue
+            if source.lower() in INTERNAL_MEMORY_ENTITY_NAMES or target.lower() in INTERNAL_MEMORY_ENTITY_NAMES:
+                continue
+            filtered_relations.append(relation)
+
         nodes: list[dict[str, Any]] = []
         node_names: set[str] = set()
 
-        for entity in entities:
+        for entity in filtered_entities:
             name = str(entity.get("name", "")).strip()
             if not name:
                 continue
@@ -116,7 +136,7 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
             )
 
         edges: list[dict[str, Any]] = []
-        for index, relation in enumerate(relations):
+        for index, relation in enumerate(filtered_relations):
             source = str(relation.get("from", "")).strip()
             target = str(relation.get("to", "")).strip()
             relation_type = str(relation.get("relationType", "")).strip()
@@ -156,8 +176,8 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
 
         return {
             "graph": {
-                "entities": entities,
-                "relations": relations,
+                "entities": filtered_entities,
+                "relations": filtered_relations,
             },
             "visualization": {
                 "nodes": nodes,

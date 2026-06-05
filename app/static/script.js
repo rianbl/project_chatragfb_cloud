@@ -10,10 +10,12 @@ let contextState = {
 };
 let contextPanelCollapsed = false;
 let contextUiStatus = 'idle';
+let chatPanelCollapsed = false;
 let memoryPanelCollapsed = false;
 let memoryUiStatus = 'idle';
 let memoryGraphEventSource = null;
 let memoryRequestInFlight = false;
+let memoryFocusMode = false;
 const MAX_CONVERSATION_CONTEXT_MESSAGES = 12;
 let conversationHistory = [];
 let memoryGraphState = {
@@ -23,8 +25,10 @@ let memoryGraphState = {
 };
 let memoryNetwork = null;
 const MEMORY_PANEL_WIDTH_STORAGE_KEY = 'memoryPanelWidthPx';
+const MEMORY_PANEL_DEFAULT_WIDTH = 320;
 const MEMORY_PANEL_MIN_WIDTH = 240;
-const MEMORY_PANEL_MAX_WIDTH = 640;
+const MEMORY_PANEL_MAX_WIDTH = 960;
+const INTERNAL_MEMORY_NODE_IDS = new Set(['session_memory']);
 
 function pushConversationEntry(role, content) {
     const normalizedRole = role === 'user' ? 'user' : 'assistant';
@@ -68,6 +72,57 @@ function toggleContextPanel() {
     setContextPanelCollapsed(!contextPanelCollapsed);
 }
 
+function setChatPanelCollapsed(isCollapsed, options = {}) {
+    const chatColumn = document.querySelector('.chat-column');
+    if (!chatColumn) {
+        return;
+    }
+
+    chatPanelCollapsed = Boolean(isCollapsed);
+    chatColumn.classList.toggle('is-collapsed', chatPanelCollapsed);
+
+    if (!chatPanelCollapsed && memoryFocusMode && !options.skipFocusReset) {
+        setMemoryFocusMode(false, { skipChatSync: true });
+    }
+}
+
+function setMemoryFocusMode(enabled, options = {}) {
+    const workspaceRow = document.querySelector('.workspace-row');
+    const memoryPanel = document.getElementById('memoryPanel');
+    const focusButton = document.getElementById('memoryFocusButton');
+    if (!workspaceRow || !memoryPanel || !focusButton) {
+        return;
+    }
+    if (window.innerWidth <= 900 && enabled) {
+        return;
+    }
+    if (memoryPanelCollapsed && enabled) {
+        return;
+    }
+
+    memoryFocusMode = Boolean(enabled);
+    workspaceRow.classList.toggle('memory-focus', memoryFocusMode);
+    memoryPanel.classList.toggle('is-focus', memoryFocusMode);
+    focusButton.setAttribute('aria-pressed', String(memoryFocusMode));
+    focusButton.title = memoryFocusMode ? 'Return graph panel to default size' : 'Expand graph panel';
+    focusButton.textContent = memoryFocusMode ? '⤡' : '⤢';
+
+    if (!options.skipChatSync) {
+        setChatPanelCollapsed(memoryFocusMode, { skipFocusReset: true });
+    }
+
+    if (!memoryFocusMode) {
+        applyMemoryPanelWidth(MEMORY_PANEL_DEFAULT_WIDTH, true);
+    }
+
+    requestAnimationFrame(() => {
+        if (memoryNetwork) {
+            memoryNetwork.redraw();
+            memoryNetwork.fit({ animation: { duration: 180, easingFunction: 'easeInOutQuad' } });
+        }
+    });
+}
+
 function setMemoryPanelCollapsed(isCollapsed) {
     const memoryPanel = document.getElementById('memoryPanel');
     const toggleButton = document.getElementById('memoryToggleButton');
@@ -75,10 +130,14 @@ function setMemoryPanelCollapsed(isCollapsed) {
         return;
     }
 
+    if (Boolean(isCollapsed) && memoryFocusMode) {
+        setMemoryFocusMode(false);
+    }
+
     memoryPanelCollapsed = Boolean(isCollapsed);
     memoryPanel.classList.toggle('is-collapsed', memoryPanelCollapsed);
     toggleButton.setAttribute('aria-expanded', String(!memoryPanelCollapsed));
-    toggleButton.textContent = memoryPanelCollapsed ? '▶' : '◀';
+    toggleButton.textContent = memoryPanelCollapsed ? '◀' : '▶';
     toggleButton.title = memoryPanelCollapsed ? 'Expand knowledge graph panel' : 'Collapse knowledge graph panel';
 
     if (memoryPanelCollapsed) {
@@ -101,10 +160,14 @@ function toggleMemoryPanel() {
     setMemoryPanelCollapsed(!memoryPanelCollapsed);
 }
 
+function toggleMemoryFocusMode() {
+    setMemoryFocusMode(!memoryFocusMode);
+}
+
 function clampMemoryPanelWidth(width) {
     const numericWidth = Number(width);
     if (!Number.isFinite(numericWidth)) {
-        return 320;
+        return MEMORY_PANEL_DEFAULT_WIDTH;
     }
     return Math.max(MEMORY_PANEL_MIN_WIDTH, Math.min(MEMORY_PANEL_MAX_WIDTH, Math.round(numericWidth)));
 }
@@ -129,7 +192,7 @@ function applyMemoryPanelWidth(width, persist = false) {
 }
 
 function restoreMemoryPanelWidth() {
-    let savedWidth = 320;
+    let savedWidth = MEMORY_PANEL_DEFAULT_WIDTH;
     try {
         const fromStorage = localStorage.getItem(MEMORY_PANEL_WIDTH_STORAGE_KEY);
         if (fromStorage) {
@@ -176,7 +239,7 @@ function initializeMemoryPanelResize() {
     };
 
     resizeHandle.addEventListener('pointerdown', (event) => {
-        if (window.innerWidth <= 900 || memoryPanelCollapsed) {
+        if (window.innerWidth <= 900 || memoryPanelCollapsed || memoryFocusMode) {
             return;
         }
         isDragging = true;
@@ -470,27 +533,42 @@ function renderContextState() {
     uploadContainer.style.display = contextState.is_upload_blocked ? 'none' : 'block';
 }
 
+function isInternalMemoryNodeId(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized ? INTERNAL_MEMORY_NODE_IDS.has(normalized) : false;
+}
+
 function normalizeMemoryGraphResponse(payload) {
     const visualization = payload && typeof payload === 'object' ? (payload.visualization || {}) : {};
     const meta = payload && typeof payload === 'object' ? (payload.meta || {}) : {};
     const nodes = Array.isArray(visualization.nodes) ? visualization.nodes : [];
     const edges = Array.isArray(visualization.edges) ? visualization.edges : [];
+    const normalizedNodes = nodes.map((node) => ({
+        id: String(node.id || ''),
+        label: String(node.label || node.id || ''),
+        type: String(node.type || 'unknown'),
+        observation_count: Number(node.observation_count || 0)
+    })).filter((node) => node.id && !isInternalMemoryNodeId(node.id));
+    const visibleNodeIds = new Set(normalizedNodes.map((node) => node.id));
+    const normalizedEdges = edges.map((edge) => ({
+        id: String(edge.id || ''),
+        source: String(edge.source || ''),
+        target: String(edge.target || ''),
+        label: String(edge.label || 'related_to')
+    })).filter((edge) => (
+        edge.source
+        && edge.target
+        && !isInternalMemoryNodeId(edge.source)
+        && !isInternalMemoryNodeId(edge.target)
+        && visibleNodeIds.has(edge.source)
+        && visibleNodeIds.has(edge.target)
+    ));
     return {
-        nodes: nodes.map((node) => ({
-            id: String(node.id || ''),
-            label: String(node.label || node.id || ''),
-            type: String(node.type || 'unknown'),
-            observation_count: Number(node.observation_count || 0)
-        })).filter((node) => node.id),
-        edges: edges.map((edge) => ({
-            id: String(edge.id || ''),
-            source: String(edge.source || ''),
-            target: String(edge.target || ''),
-            label: String(edge.label || 'related_to')
-        })).filter((edge) => edge.source && edge.target),
+        nodes: normalizedNodes,
+        edges: normalizedEdges,
         meta: {
-            entity_count: Number(meta.entity_count || 0),
-            relation_count: Number(meta.relation_count || 0),
+            entity_count: normalizedNodes.length,
+            relation_count: normalizedEdges.length,
             updated_at: String(meta.updated_at || '')
         }
     };
@@ -590,7 +668,7 @@ function renderMemoryGraphSvg(nodes, edges) {
             zoomView: true,
             hover: true,
             multiselect: true,
-            navigationButtons: true,
+            navigationButtons: false,
             keyboard: { enabled: true, bindToWindow: false }
         },
         layout: {
@@ -882,7 +960,9 @@ document.getElementById('userInput').addEventListener('keypress', function(event
 (async function initializeApp() {
     const toggleButton = document.getElementById('contextToggleButton');
     const collapsedRail = document.getElementById('contextCollapsedRail');
+    const chatCollapsedRail = document.getElementById('chatCollapsedRail');
     const memoryToggleButton = document.getElementById('memoryToggleButton');
+    const memoryFocusButton = document.getElementById('memoryFocusButton');
     const memoryCollapsedRail = document.getElementById('memoryCollapsedRail');
     if (toggleButton) {
         toggleButton.addEventListener('click', toggleContextPanel);
@@ -890,14 +970,23 @@ document.getElementById('userInput').addEventListener('keypress', function(event
     if (collapsedRail) {
         collapsedRail.addEventListener('click', () => setContextPanelCollapsed(false));
     }
+    if (chatCollapsedRail) {
+        chatCollapsedRail.addEventListener('click', () => setChatPanelCollapsed(false));
+    }
     if (memoryToggleButton) {
         memoryToggleButton.addEventListener('click', toggleMemoryPanel);
+    }
+    if (memoryFocusButton) {
+        memoryFocusButton.addEventListener('click', toggleMemoryFocusMode);
     }
     if (memoryCollapsedRail) {
         memoryCollapsedRail.addEventListener('click', () => setMemoryPanelCollapsed(false));
     }
 
     window.addEventListener('resize', () => {
+        if (window.innerWidth <= 900 && memoryFocusMode) {
+            setMemoryFocusMode(false);
+        }
         if (window.innerWidth > 900 && memoryNetwork) {
             memoryNetwork.redraw();
         }
@@ -910,6 +999,7 @@ document.getElementById('userInput').addEventListener('keypress', function(event
     restoreMemoryPanelWidth();
     initializeMemoryPanelResize();
     setContextPanelCollapsed(true);
+    setChatPanelCollapsed(false, { skipFocusReset: true });
     setMemoryPanelCollapsed(true);
     renderMemoryGraphState();
 

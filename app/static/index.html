@@ -32,19 +32,24 @@
                 </div>
             </div>
             <div class="chat-column">
-                <div class="chat-container">
-                    <div class="chat-display" id="chatDisplay"></div>
-                    <div class="chat-input">
-                        <input type="text" id="userInput" placeholder="Ask me about your data...">
-                        <button onclick="sendMessage()">Send</button>
-                    </div>
+                <div id="chatCollapsedRail" class="chat-collapsed-rail" title="Expand chat panel">
+                    <span class="chat-rail-icon">💬</span>
                 </div>
-                <div id="uploadContainer" class="upload-container">
-                    <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
-                        Drag & Drop your file here (CSV, TXT, PDF)
+                <div class="chat-open-content">
+                    <div class="chat-container">
+                        <div class="chat-display" id="chatDisplay"></div>
+                        <div class="chat-input">
+                            <input type="text" id="userInput" placeholder="Ask me about your data...">
+                            <button onclick="sendMessage()">Send</button>
+                        </div>
                     </div>
-                    <input type="file" id="fileInput" onchange="uploadFile()" accept=".csv,.txt,.pdf" hidden>
-                    <button onclick="document.getElementById('fileInput').click()">Browse</button>
+                    <div id="uploadContainer" class="upload-container">
+                        <div id="dropZone" class="drop-zone" ondrop="handleDrop(event)" ondragover="allowDrag(event)">
+                            Drag & Drop your file here (CSV, TXT, PDF)
+                        </div>
+                        <input type="file" id="fileInput" onchange="uploadFile()" accept=".csv,.txt,.pdf" hidden>
+                        <button onclick="document.getElementById('fileInput').click()">Browse</button>
+                    </div>
                 </div>
             </div>
             <div id="memoryPanel" class="memory-panel is-collapsed">
@@ -56,7 +61,10 @@
                 <div class="memory-open-content">
                     <div class="memory-header">
                         <span id="memoryCounter">Knowledge Graph</span>
-                        <button id="memoryToggleButton" class="memory-toggle-button" type="button" aria-expanded="false" title="Expand knowledge graph panel">◀</button>
+                        <div class="memory-header-actions">
+                            <button id="memoryFocusButton" class="memory-focus-button" type="button" aria-pressed="false" title="Expand graph panel">⤢</button>
+                            <button id="memoryToggleButton" class="memory-toggle-button" type="button" aria-expanded="false" title="Expand knowledge graph panel">◀</button>
+                        </div>
                     </div>
                     <div id="memoryGraphCanvas" class="memory-graph-canvas"></div>
                     <div id="memoryGraphLegend" class="memory-graph-legend"></div>
