@@ -17,6 +17,9 @@ pydeps/
 # Python cache
 __pycache__/
 *.py[cod]
+.mypy_cache/
+.ruff_cache/
+.coverage
 
 # Node artifacts
 mcp-server/node_modules/

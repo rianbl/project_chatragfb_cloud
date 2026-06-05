@@ -19,6 +19,7 @@ from modules.ingestion import (
     uploaded_file_size_bytes,
     uploaded_pdf_page_count,
 )
+
 from .mcp import McpHttpClient, McpServerSettings
 from .runtime import get_default_connection_factory, get_default_retrieval_service
 
@@ -81,8 +82,12 @@ class DefaultIngestionAdapter:
     def delete_document_by_id(self, document_id: int, upload_folder: str) -> dict[str, Any]:
         return delete_document_by_id(document_id, upload_folder=upload_folder)
 
-    def delete_document_by_storage_path(self, storage_path: str, upload_folder: str) -> dict[str, Any]:
-        return delete_document_by_storage_path(storage_path, upload_folder=upload_folder, remove_file=False)
+    def delete_document_by_storage_path(
+        self, storage_path: str, upload_folder: str
+    ) -> dict[str, Any]:
+        return delete_document_by_storage_path(
+            storage_path, upload_folder=upload_folder, remove_file=False
+        )
 
 
 class DefaultRetrievalAdapter:
@@ -179,5 +184,7 @@ class DefaultMcpAdapter:
             return []
         return self._client.list_tools()
 
-    def execute_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute_tool(
+        self, tool_name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._client.execute_tool(tool_name, arguments=arguments)

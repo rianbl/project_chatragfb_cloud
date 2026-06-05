@@ -7,7 +7,6 @@ import time
 
 import requests
 from huggingface_hub import InferenceClient
-
 from infrastructure.mcp import McpHttpClient, McpServerSettings
 from infrastructure.prompt_store import FilePromptStore
 from infrastructure.rag_workflow import (
@@ -87,7 +86,9 @@ class HFTextGenerator:
         last_exception = None
         for attempt in range(1, self._retries + 1):
             try:
-                return self._generate_via_router(prompt, temperature=temperature, max_new_tokens=max_new_tokens)
+                return self._generate_via_router(
+                    prompt, temperature=temperature, max_new_tokens=max_new_tokens
+                )
             except Exception as router_exc:  # noqa: BLE001
                 last_exception = router_exc
                 logger.error(
@@ -98,7 +99,9 @@ class HFTextGenerator:
                     router_exc,
                 )
             try:
-                return self._generate_via_client(prompt, temperature=temperature, max_new_tokens=max_new_tokens)
+                return self._generate_via_client(
+                    prompt, temperature=temperature, max_new_tokens=max_new_tokens
+                )
             except Exception as client_exc:  # noqa: BLE001
                 last_exception = client_exc
                 logger.error(
@@ -133,7 +136,9 @@ class HFTextGenerator:
         }
         response = requests.post(url, headers=headers, json=payload, timeout=HF_TIMEOUT)
         if response.status_code >= 400:
-            raise RuntimeError(f"Router generation failed ({response.status_code}): {response.text[:300]}")
+            raise RuntimeError(
+                f"Router generation failed ({response.status_code}): {response.text[:300]}"
+            )
 
         body = response.json()
         if isinstance(body, dict):

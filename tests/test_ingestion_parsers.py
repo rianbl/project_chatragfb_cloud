@@ -8,7 +8,12 @@ APP_ROOT = PROJECT_ROOT / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from modules.ingestion_parsers import FileParserRegistry, TxtParser, build_default_parser_registry, extract_units
+from modules.ingestion_parsers import (
+    FileParserRegistry,
+    TxtParser,
+    build_default_parser_registry,
+    extract_units,
+)
 
 
 class _CustomParser:

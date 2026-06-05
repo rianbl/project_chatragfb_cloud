@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from bootstrap.container import ServiceContainer
 
 
-def register_routes(app, container: "ServiceContainer", log_messages: list[str]) -> None:
+def register_routes(app, container: ServiceContainer, log_messages: list[str]) -> None:
     class _MemoryGraphEventHub:
         def __init__(self) -> None:
             self._subscribers: list[Queue[str]] = []
@@ -107,7 +107,10 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
             target = str(relation.get("to", "")).strip()
             if not source or not target:
                 continue
-            if source.lower() in INTERNAL_MEMORY_ENTITY_NAMES or target.lower() in INTERNAL_MEMORY_ENTITY_NAMES:
+            if (
+                source.lower() in INTERNAL_MEMORY_ENTITY_NAMES
+                or target.lower() in INTERNAL_MEMORY_ENTITY_NAMES
+            ):
                 continue
             filtered_relations.append(relation)
 
@@ -254,7 +257,10 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
 
         try:
             requested_k = payload.get("k", container.limits.retrieval_top_k)
-            return jsonify(container.query_service.execute(query_text, requested_k=requested_k)), 200
+            return (
+                jsonify(container.query_service.execute(query_text, requested_k=requested_k)),
+                200,
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
         except Exception as exc:  # noqa: BLE001
@@ -275,7 +281,9 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
             return jsonify({"error": "Query cannot be empty."}), 400
 
         try:
-            response_payload = container.chat_service.execute(user_query, conversation_context=conversation_context)
+            response_payload = container.chat_service.execute(
+                user_query, conversation_context=conversation_context
+            )
             _publish_memory_graph_update()
             return jsonify(response_payload), 200
         except ValueError as exc:
@@ -318,7 +326,11 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
         try:
             tool_result = mcp_service.execute_tool(tool_name, arguments=arguments)
             normalized_name = str(tool_name or "").strip().lower()
-            if normalized_name.startswith("memory.") and isinstance(tool_result, dict) and tool_result.get("ok"):
+            if (
+                normalized_name.startswith("memory.")
+                and isinstance(tool_result, dict)
+                and tool_result.get("ok")
+            ):
                 _publish_memory_graph_update()
             return jsonify(tool_result), 200
         except ValueError as exc:

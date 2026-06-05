@@ -106,6 +106,28 @@ If you want full runtime dependencies locally (same base as container image), us
 python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r app/requirements.txt
 ```
 
+## Pre-commit Hooks
+
+This repository uses `pre-commit` to run checks automatically before each commit:
+
+- format
+- lint
+- type check
+- tests
+
+Setup (WSL/Linux):
+
+```bash
+cd /mnt/c/Users/rianb/linux/project_chatragfb_cloud
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+pre-commit install
+pre-commit run --all-files
+```
+
+After setup, every `git commit` runs the configured hook chain from `.pre-commit-config.yaml`.
+Tool settings are centralized in `pyproject.toml`.
+
 ## Services and Ports
 
 | Service | Container Port | Host Port | Purpose |

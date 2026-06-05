@@ -93,7 +93,9 @@ class HttpMcpRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(container.mcp_service.tool_calls[0], ("filesystem.read_file", {"path": "doc.txt"}))
+        self.assertEqual(
+            container.mcp_service.tool_calls[0], ("filesystem.read_file", {"path": "doc.txt"})
+        )
 
     def test_internal_filesystem_event_route_calls_context_sync(self):
         client, container = self._build_client()

@@ -1,0 +1,43 @@
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+include = "\\.pyi?$"
+extend-exclude = """
+/(
+    \\.git
+  | \\.venv
+  | mcp-server/node_modules
+  | mcp-server/dist
+  | uploads
+  | mcp-memory
+)/
+"""
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+  ".git",
+  ".venv",
+  "mcp-server/node_modules",
+  "mcp-server/dist",
+  "uploads",
+  "mcp-memory",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests"]
+exclude = "(^mcp-server/|^uploads/|^mcp-memory/)"
+ignore_missing_imports = true
+warn_unused_configs = true
+pretty = true
+cache_dir = ".mypy_cache"

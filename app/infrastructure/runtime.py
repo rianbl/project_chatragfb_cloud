@@ -40,4 +40,3 @@ def get_db_connection():
 
 def get_default_retrieval_service() -> FaissRetrievalService:
     return _DEFAULT_RETRIEVAL_SERVICE
-

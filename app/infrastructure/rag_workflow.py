@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,9 @@ class RagWorkflowState(TypedDict, total=False):
     user_input: str
     conversation_context: str
     available_tools: list[dict[str, Any]]
-    tool_calls: list[dict[str, Any]]          # [{"name": str, "arguments": dict}]
+    tool_calls: list[dict[str, Any]]  # [{"name": str, "arguments": dict}]
     retrieved_documents: list[RetrievedDocument]
-    tool_results: dict[str, Any]              # tool_name -> raw result
+    tool_results: dict[str, Any]  # tool_name -> raw result
     tool_errors: list[str]
     response: str
 
@@ -54,6 +55,7 @@ class RetrievingToolPort(Protocol):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _normalize_manifests(raw: object) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raw = []
@@ -66,11 +68,15 @@ def _normalize_manifests(raw: object) -> list[dict[str, Any]]:
         if not name or name in seen:
             continue
         seen.add(name)
-        result.append({
-            "name": name,
-            "description": str(item.get("description", "")).strip(),
-            "inputSchema": item.get("inputSchema") if isinstance(item.get("inputSchema"), dict) else {},
-        })
+        result.append(
+            {
+                "name": name,
+                "description": str(item.get("description", "")).strip(),
+                "inputSchema": (
+                    item.get("inputSchema") if isinstance(item.get("inputSchema"), dict) else {}
+                ),
+            }
+        )
     # always include retrieval
     if not any(m["name"] == "retrieval" for m in result):
         result.insert(0, dict(_RETRIEVAL_TOOL_MANIFEST))
@@ -79,7 +85,10 @@ def _normalize_manifests(raw: object) -> list[dict[str, Any]]:
 
 def _render_manifest(manifests: list[dict[str, Any]]) -> str:
     return json.dumps(
-        [{"name": m["name"], "description": m["description"], "inputSchema": m["inputSchema"]} for m in manifests],
+        [
+            {"name": m["name"], "description": m["description"], "inputSchema": m["inputSchema"]}
+            for m in manifests
+        ],
         ensure_ascii=False,
         indent=2,
     )
@@ -177,7 +186,9 @@ def _is_surgical_read_request(user_input: str) -> bool:
         "transform",
         "regex",
     )
-    return bool(filename_pattern.search(lowered)) and any(marker in lowered for marker in read_markers)
+    return bool(filename_pattern.search(lowered)) and any(
+        marker in lowered for marker in read_markers
+    )
 
 
 def _looks_semantic_context_query(user_input: str) -> bool:
@@ -229,7 +240,9 @@ def _apply_routing_policy(
 
     names = [str(call.get("name", "")).strip().lower() for call in tool_calls]
     has_memory = any(name.startswith("memory.") for name in names)
-    has_filesystem_non_read = any(name.startswith("filesystem.") and name != "filesystem.read_file" for name in names)
+    has_filesystem_non_read = any(
+        name.startswith("filesystem.") and name != "filesystem.read_file" for name in names
+    )
     has_retrieval = "retrieval" in names
     has_read = "filesystem.read_file" in names
     surgical_read = _is_surgical_read_request(user_input)
@@ -272,6 +285,7 @@ def _format_tool_results(results: dict[str, Any]) -> str:
 # Steps
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RouterStep:
     prompt_store: PromptStorePort
@@ -304,7 +318,9 @@ class RetrieverStep:
     llm: TextGeneratorPort
     tool: RetrievingToolPort
 
-    def execute(self, state: RagWorkflowState, arguments: dict[str, Any]) -> list[RetrievedDocument]:
+    def execute(
+        self, state: RagWorkflowState, arguments: dict[str, Any]
+    ) -> list[RetrievedDocument]:
         query = str(arguments.get("query", "")).strip() or state["user_input"]
         prompt = self.prompt_store.render(
             "retriever",
@@ -348,6 +364,7 @@ class ResponderStep:
 # Concrete tool adapters (kept thin — just bridge to MCP callables)
 # ---------------------------------------------------------------------------
 
+
 class RetrievingTool:
     def __init__(self, retrieval_fn: Callable[[str], list[dict]]) -> None:
         self._fn = retrieval_fn
@@ -357,7 +374,11 @@ class RetrievingTool:
         return [
             {
                 "content": str(r.get("content", "")),
-                "source": str((r.get("metadata") or {}).get("filename") or (r.get("metadata") or {}).get("document_id") or "unknown"),
+                "source": str(
+                    (r.get("metadata") or {}).get("filename")
+                    or (r.get("metadata") or {}).get("document_id")
+                    or "unknown"
+                ),
             }
             for r in rows
         ]
@@ -366,6 +387,7 @@ class RetrievingTool:
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
+
 
 class RagWorkflowOrchestrator:
     def __init__(
@@ -417,23 +439,25 @@ class RagWorkflowOrchestrator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _normalize_tool_args(tool_name: str, args: dict[str, Any], state: RagWorkflowState) -> dict[str, Any]:
+    def _normalize_tool_args(
+        tool_name: str, args: dict[str, Any], state: RagWorkflowState
+    ) -> dict[str, Any]:
         """Ensure tool arguments are valid before dispatch. Fixes incomplete LLM-generated args."""
         if tool_name == "memory.add_observations":
             observations = args.get("observations")
             if not isinstance(observations, list) or not observations:
                 user_input = state.get("user_input", "").strip()
                 return {
-                    "observations": [
-                        {"entityName": "session_memory", "contents": [user_input]}
-                    ]
+                    "observations": [{"entityName": "session_memory", "contents": [user_input]}]
                 }
             # Validate each item has entityName (string) and contents (non-empty list of strings)
             clean: list[dict[str, Any]] = []
             for item in observations:
                 if not isinstance(item, dict):
                     continue
-                entity = str(item.get("entityName") or item.get("entity_name") or "session_memory").strip()
+                entity = str(
+                    item.get("entityName") or item.get("entity_name") or "session_memory"
+                ).strip()
                 contents = item.get("contents")
                 if not isinstance(contents, list) or not contents:
                     contents = [state.get("user_input", "").strip()]
@@ -491,7 +515,8 @@ class RagWorkflowOrchestrator:
 
         self._logger.info(
             "_handle_memory_write: entities=%d relations=%d",
-            len(entities), len(relations),
+            len(entities),
+            len(relations),
         )
         return results
 

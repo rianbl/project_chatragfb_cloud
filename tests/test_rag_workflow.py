@@ -7,7 +7,12 @@ APP_ROOT = PROJECT_ROOT / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from infrastructure.rag_workflow import RagWorkflowOrchestrator, ResponderStep, RetrieverStep, RouterStep
+from infrastructure.rag_workflow import (
+    RagWorkflowOrchestrator,
+    ResponderStep,
+    RetrieverStep,
+    RouterStep,
+)
 
 
 class _PromptStore:
@@ -62,7 +67,11 @@ class RagWorkflowTests(unittest.TestCase):
     def test_router_drops_read_file_when_not_surgical(self):
         router = RouterStep(
             prompt_store=_PromptStore(),
-            llm=_LLM(['{"tool_calls":[{"name":"retrieval","arguments":{}},{"name":"filesystem.read_file","arguments":{"path":"wikipedia.txt"}}]}']),
+            llm=_LLM(
+                [
+                    '{"tool_calls":[{"name":"retrieval","arguments":{}},{"name":"filesystem.read_file","arguments":{"path":"wikipedia.txt"}}]}'
+                ]
+            ),
         )
         state = router.execute(
             {
@@ -81,10 +90,16 @@ class RagWorkflowTests(unittest.TestCase):
     def test_orchestrator_executes_retrieval_and_tool_call(self):
         router = RouterStep(
             prompt_store=_PromptStore(),
-            llm=_LLM(['{"tool_calls":[{"name":"retrieval","arguments":{"query":"wikipedia"}},{"name":"filesystem.list_directory","arguments":{"path":"."}}]}']),
+            llm=_LLM(
+                [
+                    '{"tool_calls":[{"name":"retrieval","arguments":{"query":"wikipedia"}},{"name":"filesystem.list_directory","arguments":{"path":"."}}]}'
+                ]
+            ),
         )
         retriever_tool = _RetrieveTool([{"content": "x", "source": "wikipedia.txt"}])
-        retriever = RetrieverStep(prompt_store=_PromptStore(), llm=_LLM(["query-normalized"]), tool=retriever_tool)
+        retriever = RetrieverStep(
+            prompt_store=_PromptStore(), llm=_LLM(["query-normalized"]), tool=retriever_tool
+        )
         responder = ResponderStep(prompt_store=_PromptStore(), llm=_LLM(["ok"]))
 
         executed = []

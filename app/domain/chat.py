@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,7 @@ class ChatGenerator(Protocol):
         context: str,
         max_new_tokens: int,
         temperature: float,
-    ) -> str:
-        ...
+    ) -> str: ...
 
 
 class IntentClassifier:
@@ -29,7 +29,13 @@ class IntentClassifier:
         greeting_keywords: list[str] | None = None,
         small_talk_keywords: list[str] | None = None,
     ) -> None:
-        self._greeting_keywords = greeting_keywords or ["ola", "oi", "bom dia", "boa tarde", "boa noite"]
+        self._greeting_keywords = greeting_keywords or [
+            "ola",
+            "oi",
+            "bom dia",
+            "boa tarde",
+            "boa noite",
+        ]
         self._small_talk_keywords = small_talk_keywords or [
             "tudo bem",
             "como voce esta",
@@ -40,10 +46,14 @@ class IntentClassifier:
     def identify(self, query: str) -> str:
         query_lower = (query or "").lower()
 
-        if any(re.search(rf"\b{re.escape(word)}\b", query_lower) for word in self._greeting_keywords):
+        if any(
+            re.search(rf"\b{re.escape(word)}\b", query_lower) for word in self._greeting_keywords
+        ):
             return "greeting"
 
-        if any(re.search(rf"\b{re.escape(word)}\b", query_lower) for word in self._small_talk_keywords):
+        if any(
+            re.search(rf"\b{re.escape(word)}\b", query_lower) for word in self._small_talk_keywords
+        ):
             return "small_talk"
 
         return "data_query"
@@ -63,7 +73,10 @@ class ChatPromptBuilder:
     def build_messages(system_message: str, user_query: str, context: str) -> list[dict[str, str]]:
         return [
             {"role": "system", "content": system_message or "You are a helpful assistant."},
-            {"role": "user", "content": f"Using the context below, answer: {user_query}\n\nContext:\n{context}"},
+            {
+                "role": "user",
+                "content": f"Using the context below, answer: {user_query}\n\nContext:\n{context}",
+            },
         ]
 
     @staticmethod
@@ -200,7 +213,9 @@ class RagChatProcessor:
             }
 
         retrieved_content = "\n\n".join(item["content"] for item in search_results)
-        prompt = self._prompt_builder.build_inputs(self._system_message, user_query, retrieved_content)
+        prompt = self._prompt_builder.build_inputs(
+            self._system_message, user_query, retrieved_content
+        )
         generated_text = self._generation_gateway.generate(
             prompt=prompt,
             system_message=self._system_message,
@@ -209,7 +224,8 @@ class RagChatProcessor:
             max_new_tokens=self._max_new_tokens,
             temperature=self._temperature,
         )
-        assistant_response = self._prompt_builder.extract_assistant_response(f"{prompt}{generated_text}")
+        assistant_response = self._prompt_builder.extract_assistant_response(
+            f"{prompt}{generated_text}"
+        )
 
         return {"query": user_query, "response": assistant_response}
-

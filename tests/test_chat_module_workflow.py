@@ -36,7 +36,9 @@ class ChatModuleWorkflowTests(unittest.TestCase):
         fake = _FakeOrchestrator()
         chat_module.RAG_ORCHESTRATOR = fake
 
-        payload = chat_module.process_chat_query("o que diz o arquivo?", conversation_context="historico x")
+        payload = chat_module.process_chat_query(
+            "o que diz o arquivo?", conversation_context="historico x"
+        )
 
         self.assertEqual(payload["query"], "o que diz o arquivo?")
         self.assertEqual(payload["response"], "resposta mock")

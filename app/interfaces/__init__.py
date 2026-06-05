@@ -1,2 +1,1 @@
 """Interface adapters layer."""
-

@@ -34,7 +34,9 @@ class _FakeSession:
 
 class McpHttpClientTests(unittest.TestCase):
     def test_list_tools_returns_payload_list(self):
-        settings = McpServerSettings(enabled=True, base_url="http://mcp-server:8090", timeout_seconds=3.0)
+        settings = McpServerSettings(
+            enabled=True, base_url="http://mcp-server:8090", timeout_seconds=3.0
+        )
         session = _FakeSession(
             [
                 _FakeResponse(
@@ -57,7 +59,9 @@ class McpHttpClientTests(unittest.TestCase):
         self.assertIn("/tools", session.calls[0][1])
 
     def test_execute_tool_requires_name(self):
-        settings = McpServerSettings(enabled=True, base_url="http://mcp-server:8090", timeout_seconds=3.0)
+        settings = McpServerSettings(
+            enabled=True, base_url="http://mcp-server:8090", timeout_seconds=3.0
+        )
         session = _FakeSession([])
         client = McpHttpClient(settings, session=session)
 
@@ -65,7 +69,9 @@ class McpHttpClientTests(unittest.TestCase):
             client.execute_tool("  ", arguments={})
 
     def test_disabled_client_raises(self):
-        settings = McpServerSettings(enabled=False, base_url="http://mcp-server:8090", timeout_seconds=3.0)
+        settings = McpServerSettings(
+            enabled=False, base_url="http://mcp-server:8090", timeout_seconds=3.0
+        )
         session = _FakeSession([])
         client = McpHttpClient(settings, session=session)
 

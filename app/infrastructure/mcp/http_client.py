@@ -14,7 +14,9 @@ class McpServerSettings:
 
 
 class McpHttpClient:
-    def __init__(self, settings: McpServerSettings, session: requests.Session | None = None) -> None:
+    def __init__(
+        self, settings: McpServerSettings, session: requests.Session | None = None
+    ) -> None:
         self._settings = settings
         self._session = session or requests.Session()
 
@@ -36,7 +38,9 @@ class McpHttpClient:
             raise RuntimeError("Unexpected MCP server response format for /tools.")
         return [item for item in tools if isinstance(item, dict)]
 
-    def execute_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute_tool(
+        self, tool_name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         safe_name = (tool_name or "").strip()
         if not safe_name:
             raise ValueError("Tool name cannot be empty.")
@@ -48,7 +52,9 @@ class McpHttpClient:
             raise RuntimeError("Unexpected MCP server response for tool execution.")
         return result
 
-    def _request_json(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json(
+        self, method: str, path: str, json: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         if not self._settings.enabled:
             raise RuntimeError("MCP client is disabled by configuration.")
         url = f"{self._settings.base_url.rstrip('/')}{path}"

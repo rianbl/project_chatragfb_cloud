@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 import os
 
-from flask import Flask
-from flask_cors import CORS
-
 from bootstrap.container import build_container
 from domain.models import AppLimits
+from flask import Flask
+from flask_cors import CORS
 from modules.config import (
     EMBEDDING_MODEL_ID,
     MAX_DOCUMENTS,
@@ -72,4 +71,3 @@ def create_app() -> Flask:
 
     register_routes(app, container, log_messages)
     return app
-

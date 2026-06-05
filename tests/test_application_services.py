@@ -78,7 +78,11 @@ class FakeRetrieval:
     def __init__(self):
         self.refresh_exception = None
         self.last_query = None
-        self.status = {"embedding_model_id": "x", "embeddings_initialized": True, "vectorstore_cached": True}
+        self.status = {
+            "embedding_model_id": "x",
+            "embeddings_initialized": True,
+            "vectorstore_cached": True,
+        }
 
     def initialize_embeddings(self):
         return None
@@ -151,7 +155,9 @@ class ApplicationServicesPhase1Tests(unittest.TestCase):
         ingestion = FakeIngestion()
         retrieval = FakeRetrieval()
         retrieval.refresh_exception = ValueError("No chunks found in database.")
-        service = ContextService(ingestion=ingestion, retrieval=retrieval, limits=self.limits, logger=self.logger)
+        service = ContextService(
+            ingestion=ingestion, retrieval=retrieval, limits=self.limits, logger=self.logger
+        )
 
         result = service.refresh_search_index(allow_empty=True)
 
@@ -253,7 +259,9 @@ class ApplicationServicesPhase1Tests(unittest.TestCase):
     def test_sync_filesystem_delete_event_removes_rows_and_refreshes_index(self):
         ingestion = FakeIngestion()
         retrieval = FakeRetrieval()
-        service = ContextService(ingestion=ingestion, retrieval=retrieval, limits=self.limits, logger=self.logger)
+        service = ContextService(
+            ingestion=ingestion, retrieval=retrieval, limits=self.limits, logger=self.logger
+        )
 
         payload, status = service.sync_filesystem_event("delete", "doc.txt")
 

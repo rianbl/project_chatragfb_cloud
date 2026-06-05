@@ -2,12 +2,12 @@ import os
 import re
 from datetime import datetime
 
-from pypdf import PdfReader
+from infrastructure.runtime import get_db_connection
 from psycopg2.extras import Json, RealDictCursor
+from pypdf import PdfReader
 
 from .config import CHUNK_OVERLAP, CHUNK_SIZE, SUPPORTED_EXTENSIONS, UPLOAD_FOLDER
 from .ingestion_parsers import build_default_parser_registry, extract_units
-from infrastructure.runtime import get_db_connection
 
 PARSER_REGISTRY = build_default_parser_registry()
 
@@ -197,7 +197,13 @@ def ingest_file(file_path, original_filename=None, size_bytes=0, page_count=None
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
-                (file_name, extension.lstrip("."), normalized_path, int(size_bytes or 0), page_count),
+                (
+                    file_name,
+                    extension.lstrip("."),
+                    normalized_path,
+                    int(size_bytes or 0),
+                    page_count,
+                ),
             )
             document_id = cursor.fetchone()[0]
 

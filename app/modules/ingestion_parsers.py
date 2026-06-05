@@ -7,20 +7,19 @@ from typing import Protocol
 
 
 class FileParser(Protocol):
-    def extract_units(self, file_path: str) -> list[dict]:
-        ...
+    def extract_units(self, file_path: str) -> list[dict]: ...
 
 
 def _read_text_with_fallback(file_path: str) -> str:
     encodings = ("utf-8-sig", "utf-8", "latin-1")
     for encoding in encodings:
         try:
-            with open(file_path, "r", encoding=encoding, errors="strict") as source:
+            with open(file_path, encoding=encoding, errors="strict") as source:
                 return source.read()
         except UnicodeDecodeError:
             continue
 
-    with open(file_path, "r", encoding="utf-8", errors="replace") as source:
+    with open(file_path, encoding="utf-8", errors="replace") as source:
         return source.read()
 
 
@@ -33,7 +32,7 @@ def _normalize_text(text: str) -> str:
 class CsvParser:
     def extract_units(self, file_path: str) -> list[dict]:
         units = []
-        with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as source:
+        with open(file_path, encoding="utf-8", errors="replace", newline="") as source:
             reader = csv.reader(source)
             rows = [row for row in reader if any(cell.strip() for cell in row)]
 

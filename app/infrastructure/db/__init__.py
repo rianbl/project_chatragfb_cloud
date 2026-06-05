@@ -5,4 +5,3 @@ __all__ = [
     "PostgresSettings",
     "build_default_postgres_factory",
 ]
-

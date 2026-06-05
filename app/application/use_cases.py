@@ -31,7 +31,9 @@ class ContextService:
         if os.path.isabs(normalized_relative):
             raise ValueError("Path must be relative to context root.")
 
-        absolute_path = os.path.normcase(os.path.abspath(os.path.join(base_root, normalized_relative)))
+        absolute_path = os.path.normcase(
+            os.path.abspath(os.path.join(base_root, normalized_relative))
+        )
         if absolute_path != base_root and not absolute_path.startswith(f"{base_root}{os.sep}"):
             raise ValueError("Path is outside context root.")
         return absolute_path
@@ -48,10 +50,18 @@ class ContextService:
         try:
             self._logger.info("Refreshing FAISS index from persisted chunks.")
             self._retrieval.refresh_vectorstore_cache()
-            return {"ok": True, "status_code": 200, "message": "Vector index refreshed successfully."}
+            return {
+                "ok": True,
+                "status_code": 200,
+                "message": "Vector index refreshed successfully.",
+            }
         except ValueError as exc:
             if allow_empty:
-                return {"ok": True, "status_code": 200, "message": "Vector index refreshed with empty corpus."}
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "message": "Vector index refreshed with empty corpus.",
+                }
             return {"ok": False, "status_code": 404, "message": str(exc)}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "status_code": 500, "message": str(exc)}
@@ -138,7 +148,9 @@ class ContextService:
                 409,
             )
 
-        filepath = self._ingestion.build_file_path(file.filename, upload_folder=self._limits.upload_folder)
+        filepath = self._ingestion.build_file_path(
+            file.filename, upload_folder=self._limits.upload_folder
+        )
         filename = os.path.basename(filepath)
         self._logger.info("Saving upload to '%s'.", filepath)
         file.save(filepath)
@@ -211,7 +223,9 @@ class ContextService:
             200 if refresh_result["ok"] else refresh_result["status_code"],
         )
 
-    def sync_filesystem_event(self, operation: str, relative_path: str) -> tuple[dict[str, Any], int]:
+    def sync_filesystem_event(
+        self, operation: str, relative_path: str
+    ) -> tuple[dict[str, Any], int]:
         op = str(operation or "").strip().lower()
         if op not in {"upsert", "delete"}:
             return {"error": "Unsupported operation. Use 'upsert' or 'delete'."}, 400
@@ -309,7 +323,9 @@ class McpService:
     def list_tools(self) -> list[dict[str, Any]]:
         return self._mcp.list_tools()
 
-    def execute_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute_tool(
+        self, tool_name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._mcp.execute_tool(tool_name, arguments=arguments)
 
 

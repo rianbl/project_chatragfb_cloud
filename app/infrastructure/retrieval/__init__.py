@@ -11,4 +11,3 @@ __all__ = [
     "RetrievalSettings",
     "build_default_retrieval_service",
 ]
-

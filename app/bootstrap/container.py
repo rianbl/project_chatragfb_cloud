@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from logging import Logger
 
-from application.use_cases import ChatService, ContextService, HealthService, McpService, QueryService, StartupService
+from application.use_cases import (
+    ChatService,
+    ContextService,
+    HealthService,
+    McpService,
+    QueryService,
+    StartupService,
+)
 from domain.models import AppLimits
 from infrastructure.adapters import (
     DefaultChatAdapter,

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
 
 class ChunkDataSource(Protocol):
-    def fetch_chunks(self) -> list[dict[str, Any]]:
-        ...
+    def fetch_chunks(self) -> list[dict[str, Any]]: ...
 
 
 @dataclass(frozen=True)
@@ -164,7 +164,9 @@ class FaissRetrievalService:
             k_value = int(k)
 
         k_value = max(1, min(k_value, 20))
-        self._logger.info("Running retrieval query with k=%s. Query preview='%s'.", k_value, query[:80])
+        self._logger.info(
+            "Running retrieval query with k=%s. Query preview='%s'.", k_value, query[:80]
+        )
         retriever = self.get_vectorstore().as_retriever(search_kwargs={"k": k_value})
         docs = retriever.invoke(query)
         return [{"content": doc.page_content, "metadata": doc.metadata} for doc in docs]
@@ -186,4 +188,3 @@ def build_default_retrieval_service(
     settings = RetrievalSettings(embedding_model_id=embedding_model_id, top_k=top_k)
     data_source = PostgresChunkDataSource(connection_factory=connection_factory)
     return FaissRetrievalService(settings=settings, chunk_source=data_source)
-

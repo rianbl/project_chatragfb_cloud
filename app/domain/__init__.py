@@ -1,4 +1,10 @@
-from .chat import ChatPromptBuilder, FailoverChatGateway, IntentClassifier, RagChatProcessor, RetryPolicy
+from .chat import (
+    ChatPromptBuilder,
+    FailoverChatGateway,
+    IntentClassifier,
+    RagChatProcessor,
+    RetryPolicy,
+)
 from .models import AppLimits
 
 __all__ = [
@@ -9,4 +15,3 @@ __all__ = [
     "RagChatProcessor",
     "RetryPolicy",
 ]
-

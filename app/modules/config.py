@@ -21,11 +21,21 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "all-MiniLM-L6-v2")
 
-MCP_SERVER_ENABLED = os.getenv("MCP_SERVER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+MCP_SERVER_ENABLED = os.getenv("MCP_SERVER_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://mcp-server:8090").strip()
 MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "10"))
 INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "").strip()
-MCP_MEMORY_ENABLED = os.getenv("MCP_MEMORY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+MCP_MEMORY_ENABLED = os.getenv("MCP_MEMORY_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
 MEMORY_MAX_OBSERVATIONS = int(os.getenv("MEMORY_MAX_OBSERVATIONS", "3"))
 

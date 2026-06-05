@@ -10,4 +10,3 @@ class AppLimits:
     retrieval_top_k: int
     embedding_model_id: str
     upload_folder: str
-
