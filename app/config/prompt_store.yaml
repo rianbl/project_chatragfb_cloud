@@ -10,9 +10,7 @@ router: |
 
   Rules:
   - Call "retrieval" by default for semantic questions, summaries, comparisons, and analysis over context.
-  - Call a memory tool when the user asks to remember, memorize, or store information.
-    Use arguments matching the tool inputSchema. Keep argument values short (entity names, queries).
-    Do NOT copy large text blocks into arguments.
+  - When the user asks to remember, memorize, or store information, call ONLY "memory.add_observations" with empty arguments: {"tool_calls":[{"name":"memory.add_observations","arguments":{}}]}
   - Call a filesystem tool when the user asks to list, read, write, or delete files.
   - Use "filesystem.read_file" only for surgical reads: exact file content, CSV header inspection, precise transformations, or debugging.
   - For pure memory or filesystem requests (without semantic analysis), do NOT include "retrieval".
@@ -25,6 +23,23 @@ router: |
   {user_input}
 
   JSON response:
+
+memory_graph_builder: |
+  Extract a knowledge graph from the text below.
+  Return ONLY valid JSON with this exact structure:
+  {"entities":[{"name":"...","entityType":"...","observations":["..."]}],"relations":[{"from":"...","to":"...","relationType":"..."}]}
+
+  Rules:
+  - Extract all named entities (people, places, organizations, artifacts, events).
+  - Extract all explicit relations between entities.
+  - Keep entity names short and canonical.
+  - observations: short factual notes about each entity (can be empty list).
+  - relations: only include pairs where both entities are in the entities list.
+  - If nothing useful, return {"entities":[],"relations":[]}.
+  - Return JSON only.
+
+  Text:
+  {text}
 
 retriever: |
   Transform the user's question into a search query for retrieving relevant documents.

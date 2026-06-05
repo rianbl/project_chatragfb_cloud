@@ -376,6 +376,8 @@ class RagWorkflowOrchestrator:
         responder: ResponderStep,
         available_tools_provider: Callable[[], list[dict[str, Any]]] | None = None,
         mcp_tool_executor: Callable[[str, dict[str, Any]], Any] | None = None,
+        graph_builder_llm: TextGeneratorPort | None = None,
+        prompt_store: PromptStorePort | None = None,
         logger_instance: logging.Logger | None = None,
     ) -> None:
         self._router = router
@@ -383,6 +385,8 @@ class RagWorkflowOrchestrator:
         self._responder = responder
         self._available_tools_provider = available_tools_provider
         self._mcp_tool_executor = mcp_tool_executor
+        self._graph_builder_llm = graph_builder_llm
+        self._prompt_store = prompt_store
         self._logger = logger_instance or logger
         self._compiled_graph = self._build_graph()
 
@@ -450,6 +454,68 @@ class RagWorkflowOrchestrator:
             return {"names": [str(n).strip() for n in names if str(n).strip()]}
         return args
 
+    def _handle_memory_write(self, state: RagWorkflowState) -> dict[str, Any]:
+        """Extract graph from user_input via LLM, then create_entities + create_relations + add_observations."""
+        user_input = state.get("user_input", "").strip()
+        graph = self._build_memory_graph(user_input)
+        results: dict[str, Any] = {}
+
+        entities = graph.get("entities") or []
+        relations = graph.get("relations") or []
+
+        if entities and self._mcp_tool_executor:
+            try:
+                results["create_entities"] = self._mcp_tool_executor(
+                    "memory.create_entities", {"entities": entities}
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("memory.create_entities failed: %s", exc)
+
+        if relations and self._mcp_tool_executor:
+            try:
+                results["create_relations"] = self._mcp_tool_executor(
+                    "memory.create_relations", {"relations": relations}
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("memory.create_relations failed: %s", exc)
+
+        # always store raw text as observation so it's searchable
+        if self._mcp_tool_executor:
+            try:
+                results["add_observations"] = self._mcp_tool_executor(
+                    "memory.add_observations",
+                    {"observations": [{"entityName": "session_memory", "contents": [user_input]}]},
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("memory.add_observations failed: %s", exc)
+
+        self._logger.info(
+            "_handle_memory_write: entities=%d relations=%d",
+            len(entities), len(relations),
+        )
+        return results
+
+    def _build_memory_graph(self, text: str) -> dict[str, Any]:
+        """Use LLM to extract entities and relations from text."""
+        if self._graph_builder_llm is None or self._prompt_store is None:
+            return {"entities": [], "relations": []}
+        try:
+            prompt = self._prompt_store.render("memory_graph_builder", text=text)
+            raw = self._graph_builder_llm.generate(prompt, temperature=0.0, max_new_tokens=800)
+            # strip code fences
+            raw = raw.strip()
+            fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+            if fence:
+                raw = fence.group(1).strip()
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            if m:
+                parsed = json.loads(m.group(0))
+                if isinstance(parsed, dict):
+                    return parsed
+        except Exception:  # noqa: BLE001
+            self._logger.exception("_build_memory_graph failed, returning empty graph.")
+        return {"entities": [], "relations": []}
+
     def _fetch_tools(self) -> list[dict[str, Any]]:
         if self._available_tools_provider is None:
             return [dict(_RETRIEVAL_TOOL_MANIFEST)]
@@ -480,6 +546,9 @@ class RagWorkflowOrchestrator:
                 return ("retrieval", docs)
             if self._mcp_tool_executor is None:
                 raise RuntimeError(f"No MCP executor configured for tool '{name}'.")
+            # memory write intent: extract graph then persist
+            if name == "memory.add_observations":
+                return (name, self._handle_memory_write(state))
             args = self._normalize_tool_args(name, args, state)
             return (name, self._mcp_tool_executor(name, args))
 

@@ -199,6 +199,8 @@ def _build_rag_orchestrator() -> RagWorkflowOrchestrator:
         responder=ResponderStep(prompt_store=prompt_store, llm=text_llm),
         available_tools_provider=resolve_available_tools,
         mcp_tool_executor=execute_mcp_tool,
+        graph_builder_llm=text_llm,
+        prompt_store=prompt_store,
         logger_instance=logger,
     )
 
