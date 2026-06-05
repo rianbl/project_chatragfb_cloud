@@ -46,6 +46,21 @@
                     <button onclick="document.getElementById('fileInput').click()">Browse</button>
                 </div>
             </div>
+            <div id="memoryPanel" class="memory-panel is-collapsed">
+                <div id="memoryCollapsedRail" class="memory-collapsed-rail" title="Expand memory graph panel">
+                    <span id="memoryStatusIcon" class="memory-rail-icon">🧠</span>
+                    <span id="memoryNodesCount" class="memory-rail-count">0</span>
+                    <span class="memory-rail-menu">☰</span>
+                </div>
+                <div class="memory-open-content">
+                    <div class="memory-header">
+                        <span id="memoryCounter">Memory Graph</span>
+                        <button id="memoryToggleButton" class="memory-toggle-button" type="button" aria-expanded="false" title="Expand memory graph panel">◀</button>
+                    </div>
+                    <div id="memoryGraphCanvas" class="memory-graph-canvas"></div>
+                    <div id="memoryGraphLegend" class="memory-graph-legend"></div>
+                </div>
+            </div>
         </div>
     </div>
     <div id="loadingOverlay" class="loading-overlay">
@@ -53,6 +68,6 @@
         <p>Uploading file, please wait...</p>
     </div>
     
-    <script src="script.js?v=20260604-3"></script>
+    <script src="script.js?v=20260605-2"></script>
 </body>
 </html>

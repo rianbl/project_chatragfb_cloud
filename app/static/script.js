@@ -10,8 +10,17 @@ let contextState = {
 };
 let contextPanelCollapsed = false;
 let contextUiStatus = 'idle';
+let memoryPanelCollapsed = false;
+let memoryUiStatus = 'idle';
+let memoryGraphEventSource = null;
+let memoryRequestInFlight = false;
 const MAX_CONVERSATION_CONTEXT_MESSAGES = 12;
 let conversationHistory = [];
+let memoryGraphState = {
+    nodes: [],
+    edges: [],
+    meta: { entity_count: 0, relation_count: 0, updated_at: '' }
+};
 
 function pushConversationEntry(role, content) {
     const normalizedRole = role === 'user' ? 'user' : 'assistant';
@@ -55,6 +64,33 @@ function toggleContextPanel() {
     setContextPanelCollapsed(!contextPanelCollapsed);
 }
 
+function setMemoryPanelCollapsed(isCollapsed) {
+    const memoryPanel = document.getElementById('memoryPanel');
+    const toggleButton = document.getElementById('memoryToggleButton');
+    if (!memoryPanel || !toggleButton) {
+        return;
+    }
+
+    memoryPanelCollapsed = Boolean(isCollapsed);
+    memoryPanel.classList.toggle('is-collapsed', memoryPanelCollapsed);
+    toggleButton.setAttribute('aria-expanded', String(!memoryPanelCollapsed));
+    toggleButton.textContent = memoryPanelCollapsed ? '▶' : '◀';
+    toggleButton.title = memoryPanelCollapsed ? 'Expand memory graph panel' : 'Collapse memory graph panel';
+
+    if (memoryPanelCollapsed) {
+        stopMemoryGraphStream();
+    } else {
+        startMemoryGraphStream();
+        if (!window.EventSource) {
+            loadMemoryGraph({ silent: true }).catch((error) => console.error(error));
+        }
+    }
+}
+
+function toggleMemoryPanel() {
+    setMemoryPanelCollapsed(!memoryPanelCollapsed);
+}
+
 function getContextStatusIcon(documentCount) {
     if (contextUiStatus === 'error') {
         return '⚠️';
@@ -66,6 +102,19 @@ function getContextStatusIcon(documentCount) {
         return '📚';
     }
     return '📂';
+}
+
+function getMemoryStatusIcon(nodeCount) {
+    if (memoryUiStatus === 'error') {
+        return '⚠️';
+    }
+    if (memoryUiStatus === 'loading') {
+        return '⏳';
+    }
+    if (Number(nodeCount || 0) > 0) {
+        return '🧠';
+    }
+    return '🕸️';
 }
 
 function getFileTypeIcon(fileType) {
@@ -183,8 +232,11 @@ async function sendMessage() {
             appendMessage('model', data.response || 'Erro: Resposta inválida.');
             try {
                 await loadContextState();
+                if (!window.EventSource) {
+                    await loadMemoryGraph({ silent: true });
+                }
             } catch (refreshError) {
-                console.error('Failed to refresh context state after chat.', refreshError);
+                console.error('Failed to refresh context/memory state after chat.', refreshError);
             }
         } else {
             const errorBody = await response.json().catch(() => ({}));
@@ -316,6 +368,270 @@ function renderContextState() {
     });
 
     uploadContainer.style.display = contextState.is_upload_blocked ? 'none' : 'block';
+}
+
+function normalizeMemoryGraphResponse(payload) {
+    const visualization = payload && typeof payload === 'object' ? (payload.visualization || {}) : {};
+    const meta = payload && typeof payload === 'object' ? (payload.meta || {}) : {};
+    const nodes = Array.isArray(visualization.nodes) ? visualization.nodes : [];
+    const edges = Array.isArray(visualization.edges) ? visualization.edges : [];
+    return {
+        nodes: nodes.map((node) => ({
+            id: String(node.id || ''),
+            label: String(node.label || node.id || ''),
+            type: String(node.type || 'unknown'),
+            observation_count: Number(node.observation_count || 0)
+        })).filter((node) => node.id),
+        edges: edges.map((edge) => ({
+            id: String(edge.id || ''),
+            source: String(edge.source || ''),
+            target: String(edge.target || ''),
+            label: String(edge.label || 'related_to')
+        })).filter((edge) => edge.source && edge.target),
+        meta: {
+            entity_count: Number(meta.entity_count || 0),
+            relation_count: Number(meta.relation_count || 0),
+            updated_at: String(meta.updated_at || '')
+        }
+    };
+}
+
+function colorForNodeType(type) {
+    const palette = ['#2c7be5', '#20c997', '#f59f00', '#e64980', '#845ef7', '#228be6'];
+    const key = String(type || 'unknown');
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) {
+        hash = ((hash << 5) - hash) + key.charCodeAt(i);
+        hash |= 0;
+    }
+    return palette[Math.abs(hash) % palette.length];
+}
+
+function renderMemoryGraphSvg(nodes, edges) {
+    const canvas = document.getElementById('memoryGraphCanvas');
+    if (!canvas) {
+        return;
+    }
+
+    canvas.innerHTML = '';
+
+    if (!nodes.length) {
+        const empty = document.createElement('div');
+        empty.className = 'memory-graph-empty';
+        empty.textContent = memoryUiStatus === 'loading'
+            ? 'Loading memory graph...'
+            : 'Memory graph is empty. Ask the assistant to remember facts to populate it.';
+        canvas.appendChild(empty);
+        return;
+    }
+
+    const width = Math.max(canvas.clientWidth, 220);
+    const height = Math.max(canvas.clientHeight, 320);
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+
+    const defs = document.createElementNS(ns, 'defs');
+    const marker = document.createElementNS(ns, 'marker');
+    marker.setAttribute('id', 'memoryArrow');
+    marker.setAttribute('markerWidth', '10');
+    marker.setAttribute('markerHeight', '10');
+    marker.setAttribute('refX', '8');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    const arrowPath = document.createElementNS(ns, 'path');
+    arrowPath.setAttribute('d', 'M0,0 L0,6 L9,3 z');
+    arrowPath.setAttribute('fill', '#6c757d');
+    marker.appendChild(arrowPath);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const radius = Math.max(70, Math.min(width, height) / 2 - 46);
+    const positions = new Map();
+
+    nodes.forEach((node, index) => {
+        const angle = (Math.PI * 2 * index) / nodes.length;
+        const x = nodes.length === 1 ? centerX : centerX + radius * Math.cos(angle);
+        const y = nodes.length === 1 ? centerY : centerY + radius * Math.sin(angle);
+        positions.set(node.id, { x, y, node });
+    });
+
+    edges.forEach((edge) => {
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+        if (!source || !target) {
+            return;
+        }
+
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', String(source.x));
+        line.setAttribute('y1', String(source.y));
+        line.setAttribute('x2', String(target.x));
+        line.setAttribute('y2', String(target.y));
+        line.setAttribute('stroke', '#98a6b3');
+        line.setAttribute('stroke-width', '1.8');
+        line.setAttribute('marker-end', 'url(#memoryArrow)');
+        svg.appendChild(line);
+
+        const label = document.createElementNS(ns, 'text');
+        label.setAttribute('x', String((source.x + target.x) / 2));
+        label.setAttribute('y', String((source.y + target.y) / 2 - 4));
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('font-size', '10');
+        label.setAttribute('fill', '#495057');
+        label.textContent = edge.label;
+        svg.appendChild(label);
+    });
+
+    nodes.forEach((node) => {
+        const position = positions.get(node.id);
+        if (!position) {
+            return;
+        }
+        const group = document.createElementNS(ns, 'g');
+
+        const circle = document.createElementNS(ns, 'circle');
+        circle.setAttribute('cx', String(position.x));
+        circle.setAttribute('cy', String(position.y));
+        circle.setAttribute('r', '20');
+        circle.setAttribute('fill', colorForNodeType(node.type));
+        circle.setAttribute('fill-opacity', '0.9');
+        circle.setAttribute('stroke', '#ffffff');
+        circle.setAttribute('stroke-width', '2');
+        group.appendChild(circle);
+
+        const text = document.createElementNS(ns, 'text');
+        text.setAttribute('x', String(position.x));
+        text.setAttribute('y', String(position.y + 35));
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('font-size', '11');
+        text.setAttribute('fill', '#212529');
+        text.textContent = node.label.length > 18 ? `${node.label.slice(0, 18)}...` : node.label;
+        group.appendChild(text);
+
+        svg.appendChild(group);
+    });
+
+    canvas.appendChild(svg);
+}
+
+function renderMemoryLegend(nodes, edges, meta) {
+    const legend = document.getElementById('memoryGraphLegend');
+    if (!legend) {
+        return;
+    }
+    const typeCount = {};
+    nodes.forEach((node) => {
+        const key = String(node.type || 'unknown');
+        typeCount[key] = (typeCount[key] || 0) + 1;
+    });
+    const topTypes = Object.entries(typeCount)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([type, count]) => `${type}: ${count}`);
+    const updatedAt = meta.updated_at ? new Date(meta.updated_at).toLocaleTimeString() : '--';
+    legend.textContent = `Nodes: ${nodes.length} | Edges: ${edges.length} | Top types: ${topTypes.join(', ') || 'none'}`;
+}
+
+function renderMemoryGraphState() {
+    const nodes = memoryGraphState.nodes || [];
+    const edges = memoryGraphState.edges || [];
+    const meta = memoryGraphState.meta || {};
+
+    const counter = document.getElementById('memoryCounter');
+    const statusIcon = document.getElementById('memoryStatusIcon');
+    const nodesCount = document.getElementById('memoryNodesCount');
+
+    if (counter) {
+        counter.textContent = 'Memory Graph';
+    }
+    if (statusIcon) {
+        statusIcon.textContent = getMemoryStatusIcon(nodes.length);
+    }
+    if (nodesCount) {
+        nodesCount.textContent = String(nodes.length);
+    }
+
+    renderMemoryGraphSvg(nodes, edges);
+    renderMemoryLegend(nodes, edges, meta);
+}
+
+function handleMemoryGraphStreamEvent(event) {
+    if (!event || typeof event.data !== 'string' || !event.data.trim()) {
+        return;
+    }
+    try {
+        const payload = JSON.parse(event.data);
+        memoryGraphState = normalizeMemoryGraphResponse(payload);
+        memoryUiStatus = memoryGraphState.nodes.length > 0 ? 'ready' : 'idle';
+        renderMemoryGraphState();
+    } catch (error) {
+        console.error('Failed to parse memory graph SSE payload.', error);
+    }
+}
+
+function startMemoryGraphStream() {
+    if (!window.EventSource || memoryPanelCollapsed || memoryGraphEventSource) {
+        return;
+    }
+    const streamUrl = `${dataApiBaseUrl}/memory/graph/events`;
+    memoryGraphEventSource = new EventSource(streamUrl);
+
+    memoryGraphEventSource.addEventListener('snapshot', handleMemoryGraphStreamEvent);
+    memoryGraphEventSource.addEventListener('update', handleMemoryGraphStreamEvent);
+    memoryGraphEventSource.onmessage = handleMemoryGraphStreamEvent;
+    memoryGraphEventSource.onerror = () => {
+        if (!memoryPanelCollapsed) {
+            console.warn('Memory graph SSE connection interrupted. Waiting for auto-reconnect.');
+        }
+    };
+}
+
+function stopMemoryGraphStream() {
+    if (!memoryGraphEventSource) {
+        return;
+    }
+    memoryGraphEventSource.close();
+    memoryGraphEventSource = null;
+}
+
+async function loadMemoryGraph(options = {}) {
+    if (memoryRequestInFlight) {
+        return;
+    }
+    memoryRequestInFlight = true;
+
+    const silent = Boolean(options.silent);
+    if (!silent) {
+        memoryUiStatus = 'loading';
+        renderMemoryGraphState();
+    }
+
+    try {
+        const response = await fetch(`${dataApiBaseUrl}/memory/graph`);
+        if (!response.ok) {
+            throw new Error('Failed to load memory graph.');
+        }
+        const data = await response.json();
+        memoryGraphState = normalizeMemoryGraphResponse(data);
+        memoryUiStatus = memoryGraphState.nodes.length > 0 ? 'ready' : 'idle';
+    } catch (error) {
+        console.error(error);
+        memoryGraphState = {
+            nodes: [],
+            edges: [],
+            meta: { entity_count: 0, relation_count: 0, updated_at: '' }
+        };
+        memoryUiStatus = 'error';
+    } finally {
+        memoryRequestInFlight = false;
+    }
+
+    renderMemoryGraphState();
 }
 
 async function loadContextState() {
@@ -460,14 +776,33 @@ document.getElementById('userInput').addEventListener('keypress', function(event
 (async function initializeApp() {
     const toggleButton = document.getElementById('contextToggleButton');
     const collapsedRail = document.getElementById('contextCollapsedRail');
+    const memoryToggleButton = document.getElementById('memoryToggleButton');
+    const memoryCollapsedRail = document.getElementById('memoryCollapsedRail');
     if (toggleButton) {
         toggleButton.addEventListener('click', toggleContextPanel);
     }
     if (collapsedRail) {
         collapsedRail.addEventListener('click', () => setContextPanelCollapsed(false));
     }
+    if (memoryToggleButton) {
+        memoryToggleButton.addEventListener('click', toggleMemoryPanel);
+    }
+    if (memoryCollapsedRail) {
+        memoryCollapsedRail.addEventListener('click', () => setMemoryPanelCollapsed(false));
+    }
+
+    window.addEventListener('resize', () => {
+        renderMemoryGraphState();
+    });
+    window.addEventListener('beforeunload', () => {
+        stopMemoryGraphStream();
+    });
+
     setContextPanelCollapsed(true);
+    setMemoryPanelCollapsed(true);
+    renderMemoryGraphState();
 
     await getConfig();
     await loadContextState();
+    await loadMemoryGraph({ silent: true });
 })();

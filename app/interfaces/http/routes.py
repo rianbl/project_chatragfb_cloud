@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from queue import Empty, Full, Queue
+from threading import Lock
+from typing import TYPE_CHECKING, Any
 
-from flask import jsonify, request, send_from_directory
+from flask import Response, jsonify, request, send_from_directory
 from modules.config import INTERNAL_API_TOKEN
 
 if TYPE_CHECKING:
@@ -11,6 +15,181 @@ if TYPE_CHECKING:
 
 
 def register_routes(app, container: "ServiceContainer", log_messages: list[str]) -> None:
+    class _MemoryGraphEventHub:
+        def __init__(self) -> None:
+            self._subscribers: list[Queue[str]] = []
+            self._lock = Lock()
+
+        @staticmethod
+        def encode_event(event_name: str, payload: dict[str, Any]) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        def has_subscribers(self) -> bool:
+            with self._lock:
+                return bool(self._subscribers)
+
+        def subscribe(self) -> Queue[str]:
+            subscriber: Queue[str] = Queue(maxsize=16)
+            with self._lock:
+                self._subscribers.append(subscriber)
+            return subscriber
+
+        def unsubscribe(self, subscriber: Queue[str]) -> None:
+            with self._lock:
+                self._subscribers = [item for item in self._subscribers if item is not subscriber]
+
+        def publish(self, event_name: str, payload: dict[str, Any]) -> None:
+            chunk = self.encode_event(event_name, payload)
+            with self._lock:
+                subscribers = list(self._subscribers)
+            for subscriber in subscribers:
+                try:
+                    subscriber.put_nowait(chunk)
+                except Full:
+                    try:
+                        subscriber.get_nowait()
+                    except Empty:
+                        pass
+                    try:
+                        subscriber.put_nowait(chunk)
+                    except Full:
+                        continue
+
+    memory_graph_events = _MemoryGraphEventHub()
+
+    def _as_memory_graph(raw: Any) -> dict[str, list[dict[str, Any]]]:
+        if not isinstance(raw, dict):
+            return {"entities": [], "relations": []}
+
+        if isinstance(raw.get("entities"), list) and isinstance(raw.get("relations"), list):
+            entities = [item for item in raw.get("entities", []) if isinstance(item, dict)]
+            relations = [item for item in raw.get("relations", []) if isinstance(item, dict)]
+            return {"entities": entities, "relations": relations}
+
+        structured = raw.get("structuredContent")
+        if isinstance(structured, dict):
+            return _as_memory_graph(structured)
+
+        content = raw.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except ValueError:
+                    continue
+                graph = _as_memory_graph(parsed)
+                if graph["entities"] or graph["relations"]:
+                    return graph
+
+        return {"entities": [], "relations": []}
+
+    def _build_graph_view(graph: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+        entities = graph.get("entities", [])
+        relations = graph.get("relations", [])
+        nodes: list[dict[str, Any]] = []
+        node_names: set[str] = set()
+
+        for entity in entities:
+            name = str(entity.get("name", "")).strip()
+            if not name:
+                continue
+            node_names.add(name)
+            observations = entity.get("observations", [])
+            normalized_observations = (
+                [str(item) for item in observations if str(item).strip()]
+                if isinstance(observations, list)
+                else []
+            )
+            nodes.append(
+                {
+                    "id": name,
+                    "label": name,
+                    "type": str(entity.get("entityType", "unknown")).strip() or "unknown",
+                    "observations": normalized_observations,
+                    "observation_count": len(normalized_observations),
+                }
+            )
+
+        edges: list[dict[str, Any]] = []
+        for index, relation in enumerate(relations):
+            source = str(relation.get("from", "")).strip()
+            target = str(relation.get("to", "")).strip()
+            relation_type = str(relation.get("relationType", "")).strip()
+            if not source or not target:
+                continue
+            if source not in node_names:
+                node_names.add(source)
+                nodes.append(
+                    {
+                        "id": source,
+                        "label": source,
+                        "type": "unknown",
+                        "observations": [],
+                        "observation_count": 0,
+                    }
+                )
+            if target not in node_names:
+                node_names.add(target)
+                nodes.append(
+                    {
+                        "id": target,
+                        "label": target,
+                        "type": "unknown",
+                        "observations": [],
+                        "observation_count": 0,
+                    }
+                )
+
+            edges.append(
+                {
+                    "id": f"{source}|{relation_type}|{target}|{index}",
+                    "source": source,
+                    "target": target,
+                    "label": relation_type or "related_to",
+                }
+            )
+
+        return {
+            "graph": {
+                "entities": entities,
+                "relations": relations,
+            },
+            "visualization": {
+                "nodes": nodes,
+                "edges": edges,
+            },
+            "meta": {
+                "entity_count": len(nodes),
+                "relation_count": len(edges),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+
+    def _load_memory_graph_payload() -> dict[str, Any]:
+        mcp_service = getattr(container, "mcp_service", None)
+        if mcp_service is None:
+            raise RuntimeError("MCP service not configured.")
+
+        result = mcp_service.execute_tool("memory.read_graph", arguments={})
+        if not isinstance(result, dict) or not result.get("ok"):
+            raise RuntimeError("Memory graph tool returned an unsuccessful response.")
+        return _build_graph_view(_as_memory_graph(result.get("data")))
+
+    def _publish_memory_graph_update() -> None:
+        if not memory_graph_events.has_subscribers():
+            return
+        try:
+            payload = _load_memory_graph_payload()
+        except Exception as exc:  # noqa: BLE001
+            app.logger.warning("Skipping memory graph SSE publish after update: %s", exc)
+            return
+        memory_graph_events.publish("update", payload)
+
     @app.route("/", methods=["GET"])
     def root():
         return send_from_directory(app.static_folder, "index.html")
@@ -76,7 +255,9 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
             return jsonify({"error": "Query cannot be empty."}), 400
 
         try:
-            return jsonify(container.chat_service.execute(user_query, conversation_context=conversation_context)), 200
+            response_payload = container.chat_service.execute(user_query, conversation_context=conversation_context)
+            _publish_memory_graph_update()
+            return jsonify(response_payload), 200
         except ValueError as exc:
             app.logger.warning("Chat validation error: %s", exc)
             return jsonify({"error": str(exc)}), 400
@@ -115,12 +296,62 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
         if not isinstance(arguments, dict):
             return jsonify({"error": "Field 'arguments' must be an object."}), 400
         try:
-            return jsonify(mcp_service.execute_tool(tool_name, arguments=arguments)), 200
+            tool_result = mcp_service.execute_tool(tool_name, arguments=arguments)
+            normalized_name = str(tool_name or "").strip().lower()
+            if normalized_name.startswith("memory.") and isinstance(tool_result, dict) and tool_result.get("ok"):
+                _publish_memory_graph_update()
+            return jsonify(tool_result), 200
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:  # noqa: BLE001
             app.logger.exception("MCP tool execution failed.")
             return jsonify({"error": str(exc)}), 502
+
+    @app.route("/memory/graph", methods=["GET"])
+    def memory_graph():
+        try:
+            payload = _load_memory_graph_payload()
+            return jsonify(payload), 200
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("Memory graph load failed.")
+            return jsonify({"error": f"Failed to read memory graph: {exc}"}), 502
+
+    @app.route("/memory/graph/events", methods=["GET"])
+    def memory_graph_events_stream():
+        mcp_service = getattr(container, "mcp_service", None)
+        if mcp_service is None:
+            return jsonify({"error": "MCP service not configured."}), 501
+
+        try:
+            snapshot = _load_memory_graph_payload()
+        except Exception as exc:  # noqa: BLE001
+            app.logger.warning("Memory graph snapshot failed for SSE bootstrap: %s", exc)
+            snapshot = _build_graph_view({"entities": [], "relations": []})
+
+        subscriber = memory_graph_events.subscribe()
+
+        def event_stream():
+            yield _MemoryGraphEventHub.encode_event("snapshot", snapshot)
+            try:
+                while True:
+                    try:
+                        chunk = subscriber.get(timeout=25)
+                    except Empty:
+                        yield ": keep-alive\n\n"
+                        continue
+                    yield chunk
+            finally:
+                memory_graph_events.unsubscribe(subscriber)
+
+        return Response(
+            event_stream(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.route("/internal/filesystem/events", methods=["POST"])
     def internal_filesystem_events():

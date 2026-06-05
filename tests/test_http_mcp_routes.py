@@ -29,6 +29,26 @@ class _FakeMcpService:
 
     def execute_tool(self, tool_name, arguments=None):
         self.tool_calls.append((tool_name, arguments or {}))
+        if tool_name == "memory.read_graph":
+            return {
+                "ok": True,
+                "data": {
+                    "entities": [
+                        {
+                            "name": "alice",
+                            "entityType": "person",
+                            "observations": ["likes graphs"],
+                        }
+                    ],
+                    "relations": [
+                        {
+                            "from": "alice",
+                            "to": "project_chatragfb",
+                            "relationType": "works_on",
+                        }
+                    ],
+                },
+            }
         return {"ok": True, "tool": tool_name}
 
 
@@ -85,6 +105,30 @@ class HttpMcpRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(container.context_service.events[0], ("upsert", "doc.txt"))
+
+    def test_memory_graph_route_returns_visualization_payload(self):
+        client, container = self._build_client()
+
+        response = client.get("/memory/graph")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["meta"]["entity_count"], 2)
+        self.assertEqual(payload["meta"]["relation_count"], 1)
+        self.assertEqual(payload["visualization"]["nodes"][0]["id"], "alice")
+        self.assertEqual(container.mcp_service.tool_calls[0], ("memory.read_graph", {}))
+
+    def test_memory_graph_sse_stream_returns_snapshot_event(self):
+        client, _container = self._build_client()
+
+        response = client.get("/memory/graph/events", buffered=False)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/event-stream")
+        first_chunk = next(response.response).decode("utf-8")
+        self.assertIn("event: snapshot", first_chunk)
+        self.assertIn('"visualization"', first_chunk)
+        response.close()
 
 
 if __name__ == "__main__":
