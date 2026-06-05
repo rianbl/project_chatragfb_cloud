@@ -7,7 +7,7 @@ APP_ROOT = PROJECT_ROOT / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from infrastructure.rag_workflow import FilesystemStep, RagWorkflowOrchestrator, ResponderStep, RetrieverStep, RouterStep
+from infrastructure.rag_workflow import MemoryStep, FilesystemStep, RagWorkflowOrchestrator, ResponderStep, RetrieverStep, RouterStep
 
 
 class _PromptStore:
@@ -24,6 +24,7 @@ class _PromptStore:
                 f"RESPONDER::{variables['conversation_context']}::"
                 f"{variables['retrieved_documents']}::"
                 f"{variables['filesystem_context']}::"
+                f"{variables['memory_context']}::"
                 f"{variables['tool_errors']}::"
                 f"{variables['user_input']}"
             )
@@ -83,6 +84,39 @@ class _FilesystemTool:
         return f"File deleted: {path}"
 
 
+class _MemoryTool:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+        self.open_calls = []
+        self.write_calls = []
+        self.created_entities = []
+        self.created_relations = []
+
+    def search_nodes(self, query: str):
+        self.calls.append(query)
+        return dict(self.payload)
+
+    def open_nodes(self, names: list[str]):
+        self.open_calls.append(list(names))
+        return dict(self.payload)
+
+    def add_observations(self, entity_name: str, contents: list[str]):
+        self.write_calls.append((entity_name, list(contents)))
+        return {
+            "content": [{"type": "text", "text": f"Added {len(contents)} observations."}],
+            "structuredContent": {"added": len(contents)},
+        }
+
+    def create_entities(self, entities: list[dict]):
+        self.created_entities.append(list(entities))
+        return {"structuredContent": {"created": len(entities), "entities": entities}}
+
+    def create_relations(self, relations: list[dict]):
+        self.created_relations.append(list(relations))
+        return {"structuredContent": {"created": len(relations), "relations": relations}}
+
+
 class RagWorkflowTests(unittest.TestCase):
     def test_router_step_parses_tools_contract(self):
         step = RouterStep(prompt_store=_PromptStore(), llm=_LLM(['{"tools":["retrieval","filesystem"]}']))
@@ -114,6 +148,31 @@ class RagWorkflowTests(unittest.TestCase):
         payload = step.execute({"user_input": "crie arquivo hello_world.csv com hello world"})
 
         self.assertEqual(payload["tools"], ["filesystem"])
+        self.assertFalse(payload["use_retrieval"])
+
+    def test_router_step_keeps_memory_without_forcing_retrieval_when_context_exists(self):
+        step = RouterStep(
+            prompt_store=_PromptStore(),
+            llm=_LLM(['{"tools":["memory"],"tool_inputs":{"memory":{"operation":"search_nodes","query":"captain elara"}}}']),
+        )
+
+        payload = step.execute(
+            {
+                "user_input": "remember and memorize captain elara details",
+                "conversation_context": "user: remember and memorize captain elara details",
+            }
+        )
+
+        self.assertEqual(payload["tools"], ["memory"])
+        self.assertFalse(payload["use_retrieval"])
+        self.assertTrue(payload["use_memory"])
+
+    def test_router_step_detects_memory_intent_even_with_rmember_typo(self):
+        step = RouterStep(prompt_store=_PromptStore(), llm=_LLM(['{"tools":[]}']))
+
+        payload = step.execute({"user_input": "Rmember and memorize this lore for later"})
+
+        self.assertIn("memory", payload["tools"])
         self.assertFalse(payload["use_retrieval"])
 
     def test_retriever_step_generates_query_and_calls_tool(self):
@@ -219,6 +278,146 @@ class RagWorkflowTests(unittest.TestCase):
         self.assertEqual(state["search_query"], "query-doc")
         self.assertEqual(state["filesystem_entries"][0]["name"], "manual.pdf")
         self.assertEqual(state["response"], "resposta com docs e arquivos")
+
+    def test_memory_step_builds_context_from_entities(self):
+        step = MemoryStep(tool=_MemoryTool({"entities": [{"name": "Alice", "entityType": "person", "observations": ["prefers tea"]}]}))
+
+        state = step.execute({"user_input": "o que voce sabe sobre alice?", "tool_inputs": {"memory": {"query": "alice"}}})
+
+        self.assertEqual(state["memory_query"], "alice")
+        self.assertIn("entity: Alice (person)", state["memory_context"])
+
+    def test_orchestrator_runs_memory_tool(self):
+        router = RouterStep(prompt_store=_PromptStore(), llm=_LLM(['{"tools":["memory"],"tool_inputs":{"memory":{"operation":"search_nodes","query":"alice"}}}']))
+        retriever_tool = _RetrieveTool([{"content": "doc", "source": "manual.pdf"}])
+        retriever = RetrieverStep(prompt_store=_PromptStore(), llm=_LLM(["query-doc"]), tool=retriever_tool)
+        responder = ResponderStep(prompt_store=_PromptStore(), llm=_LLM(["resposta com memoria"]))
+        memory_tool = _MemoryTool({"entities": [{"name": "Alice", "entityType": "person", "observations": ["likes coffee"]}]})
+        memory = MemoryStep(tool=memory_tool)
+        orchestrator = RagWorkflowOrchestrator(
+            router=router,
+            retriever=retriever,
+            responder=responder,
+            memory=memory,
+            prefer_langgraph=False,
+        )
+
+        state = orchestrator.run(user_input="o que voce lembra da alice?", conversation_context="")
+
+        self.assertEqual(memory_tool.calls[0], "alice")
+        self.assertEqual(state["response"], "resposta com memoria")
+        self.assertIn("Alice", state["memory_context"])
+
+    def test_memory_step_adds_observations_when_operation_is_add_observations(self):
+        memory_tool = _MemoryTool({})
+        step = MemoryStep(tool=memory_tool)
+
+        state = step.execute(
+            {
+                "user_input": 'Remember and memorize: "Captain Elara leads Silver Hawks"',
+                "tool_inputs": {
+                    "memory": {
+                        "operation": "add_observations",
+                        "entity_name": "session_memory",
+                        "content": "Captain Elara leads Silver Hawks",
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(memory_tool.write_calls[0], ("session_memory", ["Captain Elara leads Silver Hawks"]))
+        self.assertIn("Added 1 observations.", state["memory_context"])
+
+    def test_memory_step_builds_graph_entities_and_relations_when_extractor_returns_structured_data(self):
+        memory_tool = _MemoryTool({})
+        step = MemoryStep(
+            tool=memory_tool,
+            operation_planner=lambda user_input, conversation_context: {
+                "operation": "store_graph",
+                "content": "Captain Elara leads Silver Hawks",
+            },
+            graph_builder=lambda content, context: {
+                "entities": [
+                    {"name": "Captain Elara", "entityType": "person", "observations": ["Leads Silver Hawks"]},
+                    {"name": "Silver Hawks", "entityType": "organization", "observations": ["Elite scouting company"]},
+                ],
+                "relations": [{"from": "Captain Elara", "to": "Silver Hawks", "relationType": "leads"}],
+            },
+        )
+
+        state = step.execute(
+            {
+                "user_input": 'Remember and memorize: "Captain Elara leads Silver Hawks"',
+                "conversation_context": "ctx",
+                "tool_inputs": {
+                    "memory": {
+                        "operation": "add_observations",
+                        "content": "Captain Elara leads Silver Hawks",
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(len(memory_tool.created_entities), 1)
+        self.assertEqual(len(memory_tool.created_entities[0]), 2)
+        self.assertEqual(memory_tool.created_relations[0][0]["relationType"], "leads")
+        self.assertEqual(memory_tool.write_calls, [])
+        self.assertIn("memory graph updated: entities=2 relations=1.", state["memory_context"])
+
+    def test_memory_step_filters_relations_without_known_entities(self):
+        memory_tool = _MemoryTool({})
+        step = MemoryStep(
+            tool=memory_tool,
+            operation_planner=lambda user_input, conversation_context: {
+                "operation": "store_graph",
+                "content": "Captain Elara leads Silver Hawks",
+            },
+            graph_builder=lambda content, context: {
+                "entities": [
+                    {"name": "Captain Elara", "entityType": "person", "observations": ["Leads Silver Hawks"]},
+                ],
+                "relations": [
+                    {"from": "Captain Elara", "to": "Silver Hawks", "relationType": "leads"},
+                ],
+            },
+        )
+
+        state = step.execute({"user_input": "remember this", "conversation_context": "ctx"})
+
+        self.assertEqual(len(memory_tool.created_entities), 1)
+        self.assertEqual(memory_tool.created_relations, [])
+        self.assertIn("memory graph updated: entities=1 relations=0.", state["memory_context"])
+
+    def test_memory_step_falls_back_to_inferred_operation_when_planner_is_invalid(self):
+        memory_tool = _MemoryTool({})
+        step = MemoryStep(
+            tool=memory_tool,
+            operation_planner=lambda user_input, conversation_context: {
+                "operation": "invalid_operation",
+            },
+        )
+
+        state = step.execute({"user_input": "remember this fact please", "conversation_context": ""})
+
+        self.assertEqual(memory_tool.calls, [])
+        self.assertEqual(memory_tool.created_entities, [])
+        self.assertEqual(memory_tool.write_calls[0][0], "session_memory")
+        self.assertIn("Added 1 observations.", state["memory_context"])
+
+    def test_memory_step_uses_operation_planner_for_open_nodes(self):
+        memory_tool = _MemoryTool({"entities": [{"name": "Captain Elara", "entityType": "person", "observations": []}]})
+        step = MemoryStep(
+            tool=memory_tool,
+            operation_planner=lambda user_input, conversation_context: {
+                "operation": "open_nodes",
+                "names": ["Captain Elara"],
+            },
+        )
+
+        state = step.execute({"user_input": "open memory for Elara", "conversation_context": "ctx"})
+
+        self.assertEqual(memory_tool.open_calls[0], ["Captain Elara"])
+        self.assertIn("Captain Elara", state["memory_context"])
 
     def test_orchestrator_skips_tools_when_router_returns_empty(self):
         router = RouterStep(prompt_store=_PromptStore(), llm=_LLM(['{"tools":[]}']))

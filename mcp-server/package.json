@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server-filesystem": "^2026.1.14",
+    "@modelcontextprotocol/server-memory": "^2025.8.4",
     "express": "^4.21.2"
   },
   "devDependencies": {

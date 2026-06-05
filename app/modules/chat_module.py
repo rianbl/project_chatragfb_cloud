@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import inspect
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -13,8 +15,11 @@ from huggingface_hub import InferenceClient
 from infrastructure.mcp import McpHttpClient, McpServerSettings
 from infrastructure.prompt_store import FilePromptStore
 from infrastructure.rag_workflow import (
+    ConservativeRouterDecisionPolicy,
     FilesystemMcpTool,
     FilesystemStep,
+    MemoryMcpTool,
+    MemoryStep,
     RagWorkflowOrchestrator,
     ResponderStep,
     RetrieverStep,
@@ -35,6 +40,9 @@ from .config import (
     MCP_SERVER_ENABLED,
     MCP_SERVER_URL,
     MCP_TIMEOUT,
+    MCP_MEMORY_ENABLED,
+    MEMORY_MAX_OBSERVATIONS,
+    MEMORY_TOP_K,
     PROMPT_STORE_PATH,
     SUPPORTED_EXTENSIONS,
     UPLOAD_FOLDER,
@@ -332,6 +340,97 @@ class MCPFilesystemToolClient:
         return ""
 
 
+class MCPMemoryToolClient:
+    def __init__(self) -> None:
+        self._enabled = MCP_MEMORY_ENABLED
+        self._client = McpHttpClient(
+            McpServerSettings(
+                enabled=MCP_SERVER_ENABLED,
+                base_url=MCP_SERVER_URL,
+                timeout_seconds=MCP_TIMEOUT,
+            )
+        )
+
+    def search_nodes(self, query: str) -> dict:
+        if not self._enabled:
+            return {}
+        safe_query = str(query or "").strip()
+        if not safe_query:
+            return {}
+        result = self._client.execute_tool("memory.search_nodes", arguments={"query": safe_query})
+        return self._extract_data_object(result)
+
+    def open_nodes(self, names: list[str]) -> dict:
+        if not self._enabled:
+            return {}
+        safe_names = [str(item or "").strip() for item in names if str(item or "").strip()]
+        if not safe_names:
+            return {}
+        result = self._client.execute_tool("memory.open_nodes", arguments={"names": safe_names})
+        return self._extract_data_object(result)
+
+    def add_observations(self, entity_name: str, contents: list[str]) -> dict:
+        if not self._enabled:
+            return {}
+        safe_entity_name = str(entity_name or "").strip() or "session_memory"
+        safe_contents = [str(item or "").strip() for item in contents if str(item or "").strip()]
+        if not safe_contents:
+            return {}
+        result = self._client.execute_tool(
+            "memory.add_observations",
+            arguments={"observations": [{"entityName": safe_entity_name, "contents": safe_contents}]},
+        )
+        return self._extract_data_object(result)
+
+    def create_entities(self, entities: list[dict]) -> dict:
+        if not self._enabled:
+            return {}
+        safe_entities = []
+        for item in entities:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            entity_type = str(item.get("entityType", "")).strip() or "unknown"
+            if not name:
+                continue
+            observations = item.get("observations")
+            safe_observations = (
+                [str(obs).strip() for obs in observations if str(obs).strip()]
+                if isinstance(observations, list)
+                else []
+            )
+            safe_entities.append({"name": name, "entityType": entity_type, "observations": safe_observations})
+        if not safe_entities:
+            return {}
+        result = self._client.execute_tool("memory.create_entities", arguments={"entities": safe_entities})
+        return self._extract_data_object(result)
+
+    def create_relations(self, relations: list[dict]) -> dict:
+        if not self._enabled:
+            return {}
+        safe_relations = []
+        for item in relations:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("from", "")).strip()
+            target = str(item.get("to", "")).strip()
+            relation_type = str(item.get("relationType", "")).strip()
+            if not source or not target or not relation_type:
+                continue
+            safe_relations.append({"from": source, "to": target, "relationType": relation_type})
+        if not safe_relations:
+            return {}
+        result = self._client.execute_tool("memory.create_relations", arguments={"relations": safe_relations})
+        return self._extract_data_object(result)
+
+    @staticmethod
+    def _extract_data_object(result: dict) -> dict:
+        data = result.get("data", {})
+        if isinstance(data, dict):
+            return data
+        return {}
+
+
 def _build_hf_client(provider: str):
     if not HF_API_TOKEN:
         raise ValueError("Missing required environment variable: HF_API_TOKEN")
@@ -478,10 +577,69 @@ def _build_rag_orchestrator() -> RagWorkflowOrchestrator:
         delete_file_fn=filesystem_client.delete_file,
     )
 
+    def parse_json_object(raw_output: str) -> dict:
+        text = (raw_output or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            pass
+        json_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not json_match:
+            return {}
+        try:
+            parsed = json.loads(json_match.group(0))
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def build_memory_graph_candidate(memory_content: str, conversation_context: str) -> dict:
+        prompt = prompt_store.render(
+            "memory_graph_builder",
+            conversation_context=conversation_context or "",
+            memory_content=memory_content or "",
+        )
+        raw_output = text_llm.generate(prompt, temperature=0.0, max_new_tokens=480).strip()
+        return parse_json_object(raw_output)
+
+    def plan_memory_operation(user_input: str, conversation_context: str) -> dict:
+        prompt = prompt_store.render(
+            "memory_operation_planner",
+            conversation_context=conversation_context or "",
+            user_input=user_input or "",
+        )
+        raw_output = text_llm.generate(prompt, temperature=0.0, max_new_tokens=220).strip()
+        return parse_json_object(raw_output)
+
+    memory_step = None
+    if MCP_MEMORY_ENABLED:
+        memory_client = MCPMemoryToolClient()
+        memory_tool = MemoryMcpTool(
+            search_nodes_fn=memory_client.search_nodes,
+            open_nodes_fn=memory_client.open_nodes,
+            add_observations_fn=memory_client.add_observations,
+            create_entities_fn=memory_client.create_entities,
+            create_relations_fn=memory_client.create_relations,
+        )
+        memory_step = MemoryStep(
+            tool=memory_tool,
+            operation_planner=plan_memory_operation,
+            graph_builder=build_memory_graph_candidate,
+            max_entities=max(1, MEMORY_TOP_K),
+            max_observations_per_entity=max(1, MEMORY_MAX_OBSERVATIONS),
+        )
+
     return RagWorkflowOrchestrator(
-        router=RouterStep(prompt_store=prompt_store, llm=text_llm),
+        router=RouterStep(
+            prompt_store=prompt_store,
+            llm=text_llm,
+            decision_policy=ConservativeRouterDecisionPolicy(memory_enabled=MCP_MEMORY_ENABLED),
+        ),
         retriever=RetrieverStep(prompt_store=prompt_store, llm=text_llm, tool=retrieving_tool),
         filesystem=FilesystemStep(tool=filesystem_tool),
+        memory=memory_step,
         responder=ResponderStep(prompt_store=prompt_store, llm=text_llm),
         prefer_langgraph=True,
         logger_instance=logger,
@@ -510,6 +668,8 @@ def get_chat_status():
         "model": HF_MODEL_ID,
         "timeout_seconds": HF_TIMEOUT,
         "prompt_store_path": PROMPT_STORE_PATH,
+        "memory_enabled": MCP_MEMORY_ENABLED,
+        "memory_top_k": MEMORY_TOP_K,
         "dns": {
             "api_inference": _resolve_host("api-inference.huggingface.co"),
             "router": _resolve_host("router.huggingface.co"),

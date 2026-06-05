@@ -15,12 +15,13 @@ Browser (localhost:8080)
   -> app service (Flask)
        -> /upload, /documents, /query, /chat, /feedback
        -> MCP client module (HTTP) for /mcp/* and future tool-aware orchestration
-       -> Chat workflow: Router -> (Retriever?) -> Responder
+       -> Chat workflow: Router -> (Retriever?/Filesystem?/Memory?) -> Responder
        -> in-memory FAISS index (built from PostgreSQL chunks)
        -> Hugging Face Inference API for final answer generation
   -> mcp-server (localhost:8090)
-       -> tool registry namespace: filesystem.*
+       -> tool registry namespaces: filesystem.* and memory.*
        -> filesystem tools proxied to official prebuilt filesystem MCP server package
+       -> memory tools proxied to official prebuilt memory MCP server package (with local fallback store)
   -> postgres (localhost:5432)
        -> documents + chunks tables
 ```
@@ -188,6 +189,9 @@ Optional model/runtime vars:
 - `MCP_SERVER_ENABLED`
 - `MCP_SERVER_URL`
 - `MCP_TIMEOUT`
+- `MCP_MEMORY_ENABLED`
+- `MEMORY_TOP_K`
+- `MEMORY_MAX_OBSERVATIONS`
 - `PROMPT_STORE_PATH` (default: `app/config/prompt_store.yaml`)
 - `EMBEDDING_MODEL_ID`
 - `RETRIEVAL_TOP_K`

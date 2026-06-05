@@ -17,7 +17,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_ROUTER_TOOLS = {"retrieval", "filesystem"}
+_SUPPORTED_ROUTER_TOOLS = {"retrieval", "filesystem", "memory"}
 
 
 class RetrievedDocument(TypedDict):
@@ -37,6 +37,7 @@ class RagWorkflowState(TypedDict, total=False):
     tool_inputs: dict[str, dict[str, str]]
     use_retrieval: bool
     use_filesystem: bool
+    use_memory: bool
     search_query: str
     retrieved_documents: list[RetrievedDocument]
     filesystem_path: str
@@ -44,6 +45,8 @@ class RagWorkflowState(TypedDict, total=False):
     filesystem_entries: list[FilesystemEntry]
     filesystem_content: str
     filesystem_result: str
+    memory_query: str
+    memory_context: str
     tool_errors: list[str]
     response: str
 
@@ -74,6 +77,23 @@ class FilesystemToolPort(Protocol):
         ...
 
     def delete_file(self, path: str) -> str:
+        ...
+
+
+class MemoryToolPort(Protocol):
+    def search_nodes(self, query: str) -> dict:
+        ...
+
+    def open_nodes(self, names: list[str]) -> dict:
+        ...
+
+    def add_observations(self, entity_name: str, contents: list[str]) -> dict:
+        ...
+
+    def create_entities(self, entities: list[dict]) -> dict:
+        ...
+
+    def create_relations(self, relations: list[dict]) -> dict:
         ...
 
 
@@ -127,7 +147,26 @@ class ConservativeRouterDecisionPolicy:
         r"\bcontrato\b",
         r"\bpol[ií]tica\b",
     )
+    _MEMORY_HINT_PATTERNS = (
+        r"\blembra\b",
+        r"\blembre\b",
+        r"\brmember\b",
+        r"\bremember\b",
+        r"\bmemor(y|ize|ized|izing)\b",
+        r"\bmemoriza(r|do|da|cao|ção)?\b",
+        r"\bmem[oó]ria\b",
+        r"\bmemory\b",
+        r"\bprefer[eê]ncia\b",
+        r"\bpreference\b",
+        r"\bgosto\b",
+        r"\blike\b",
+        r"\bperfil\b",
+        r"\bprofile\b",
+    )
     _AFFIRMATIVE_INPUTS = {"yes", "sim", "ok", "okay", "pode", "prossiga", "continue", "confirmo", "confirma"}
+
+    def __init__(self, *, memory_enabled: bool = True) -> None:
+        self._memory_enabled = memory_enabled
 
     def decide_tools(
         self,
@@ -138,10 +177,14 @@ class ConservativeRouterDecisionPolicy:
         model_tool_inputs: dict[str, dict[str, str]],
     ) -> list[str]:
         tools = self._normalize_tools(model_tools)
+        if not self._memory_enabled:
+            tools = [tool for tool in tools if tool != "memory"]
         normalized_input = " ".join((user_input or "").lower().split())
         normalized_context = " ".join((conversation_context or "").lower().split())
         filesystem_inputs = model_tool_inputs.get("filesystem", {}) if isinstance(model_tool_inputs, dict) else {}
+        memory_inputs = model_tool_inputs.get("memory", {}) if isinstance(model_tool_inputs, dict) else {}
         filesystem_operation = str(filesystem_inputs.get("operation", "")).strip().lower()
+        memory_operation = str(memory_inputs.get("operation", "")).strip().lower()
         is_affirmative_followup = (
             normalized_input in self._AFFIRMATIVE_INPUTS
             and self._looks_like_filesystem_request(normalized_context)
@@ -156,9 +199,15 @@ class ConservativeRouterDecisionPolicy:
             "delete",
             "list",
         } or self._looks_like_filesystem_request(normalized_input) or is_affirmative_followup
+        pure_memory_action = (
+            memory_operation in {"search_nodes", "open_nodes", "read_graph", "add_observations", "store_graph", "search", "open", "read", "memorize"}
+            or self._looks_like_memory_request(normalized_input)
+        )
 
         if pure_filesystem_action and "filesystem" not in tools:
             tools.append("filesystem")
+        if self._memory_enabled and pure_memory_action and "memory" not in tools:
+            tools.append("memory")
 
         if (
             "filesystem" in tools
@@ -168,15 +217,21 @@ class ConservativeRouterDecisionPolicy:
             and not (conversation_context or "").strip()
         ):
             tools = [tool_name for tool_name in tools if tool_name != "retrieval"]
+        if (
+            "memory" in tools
+            and "retrieval" in tools
+            and pure_memory_action
+            and not self._looks_like_document_request(normalized_input)
+            and not (conversation_context or "").strip()
+        ):
+            tools = [tool_name for tool_name in tools if tool_name != "retrieval"]
 
         if "retrieval" not in tools:
-            if (
-                "filesystem" in tools
-                and not self._looks_like_document_request(normalized_input)
-                and not (conversation_context or "").strip()
-            ):
+            input_looks_like_document_request = self._looks_like_document_request(normalized_input)
+            context_looks_like_document_request = self._looks_like_document_request(normalized_context)
+            if ("filesystem" in tools or "memory" in tools) and not input_looks_like_document_request and not context_looks_like_document_request:
                 return tools
-            if (conversation_context or "").strip():
+            if context_looks_like_document_request:
                 logger.info("RouterDecisionPolicy override: retrieval forced by available conversation context.")
                 tools.append("retrieval")
             elif not normalized_input:
@@ -210,6 +265,12 @@ class ConservativeRouterDecisionPolicy:
 
     def _looks_like_document_request(self, normalized_input: str) -> bool:
         for pattern in self._DOCUMENT_HINT_PATTERNS:
+            if re.search(pattern, normalized_input):
+                return True
+        return False
+
+    def _looks_like_memory_request(self, normalized_input: str) -> bool:
+        for pattern in self._MEMORY_HINT_PATTERNS:
             if re.search(pattern, normalized_input):
                 return True
         return False
@@ -311,6 +372,7 @@ class RouterStep:
             "tool_inputs": filtered_tool_inputs,
             "use_retrieval": "retrieval" in selected_tools,
             "use_filesystem": "filesystem" in selected_tools,
+            "use_memory": "memory" in selected_tools,
         }
 
 
@@ -455,6 +517,349 @@ class FilesystemStep:
 
 
 @dataclass
+class MemoryStep:
+    tool: MemoryToolPort
+    operation_planner: Callable[[str, str], dict] | None = None
+    graph_builder: Callable[[str, str], dict] | None = None
+    max_entities: int = 8
+    max_observations_per_entity: int = 3
+    max_text_chars: int = 2000
+
+    def execute(self, state: RagWorkflowState) -> RagWorkflowState:
+        tool_inputs = state.get("tool_inputs", {}) or {}
+        memory_inputs = tool_inputs.get("memory", {}) if isinstance(tool_inputs, dict) else {}
+        user_input = state.get("user_input", "")
+        conversation_context = state.get("conversation_context", "")
+        planned = self._build_operation_plan(
+            user_input=user_input,
+            conversation_context=conversation_context,
+            memory_inputs=memory_inputs if isinstance(memory_inputs, dict) else {},
+        )
+        operation = planned.get("operation", "search_nodes")
+        query = planned.get("query", "")
+        names = planned.get("names", [])
+
+        if operation in {"add_observations", "memorize", "store_graph"}:
+            content = planned.get("content", "")
+            if not content:
+                return {
+                    "memory_query": "",
+                    "memory_context": "memory write skipped: empty content.",
+                }
+            entity_name = planned.get("entity_name", "session_memory")
+            graph_summary = ""
+            if operation in {"memorize", "store_graph"} and self.graph_builder is not None:
+                logger.info("MemoryStep: extracting graph from memory content.")
+                candidate_graph = self.graph_builder(content, conversation_context)
+                entities = self._sanitize_candidate_entities(candidate_graph.get("entities"))
+                relations = self._sanitize_candidate_relations(candidate_graph.get("relations"))
+                relations = self._filter_relations_by_existing_entities(relations, entities)
+                if entities:
+                    self.tool.create_entities(entities)
+                    if relations:
+                        self.tool.create_relations(relations)
+                    graph_summary = (
+                        f"memory graph updated: entities={len(entities)} relations={len(relations)}."
+                    )
+
+            if graph_summary:
+                return {
+                    "memory_query": "",
+                    "memory_context": graph_summary,
+                }
+
+            logger.info("MemoryStep: storing memory observation for entity='%s'.", entity_name)
+            payload = self.tool.add_observations(entity_name=entity_name, contents=[content])
+            return {
+                "memory_query": "",
+                "memory_context": self._format_memory_write_payload(payload, entity_name=entity_name),
+            }
+
+        if operation == "open_nodes":
+            if not names:
+                return {
+                    "memory_query": "",
+                    "memory_context": "[]",
+                }
+            logger.info("MemoryStep: opening memory nodes names=%s.", names)
+            payload = self.tool.open_nodes(names=names)
+            memory_context = self._format_memory_payload(payload)
+            return {
+                "memory_query": ", ".join(names),
+                "memory_context": memory_context,
+            }
+
+        if not query:
+            return {
+                "memory_query": "",
+                "memory_context": "[]",
+            }
+
+        logger.info("MemoryStep: searching memory nodes with query='%s'.", query)
+        payload = self.tool.search_nodes(query=query)
+        memory_context = self._format_memory_payload(payload)
+        logger.info("MemoryStep: memory context generated (length=%d).", len(memory_context))
+        return {
+            "memory_query": query,
+            "memory_context": memory_context,
+        }
+
+    def _build_operation_plan(self, *, user_input: str, conversation_context: str, memory_inputs: dict[str, str]) -> dict:
+        planned: dict = {}
+        if self.operation_planner is not None:
+            try:
+                planner_output = self.operation_planner(user_input, conversation_context)
+                if isinstance(planner_output, dict):
+                    planned = planner_output
+            except Exception:  # noqa: BLE001
+                logger.exception("MemoryStep: operation planner failed, using fallback logic.")
+
+        allowed_operations = {"search_nodes", "open_nodes", "add_observations", "memorize", "store_graph"}
+        raw_operation = str(planned.get("operation") or "").strip().lower()
+        if raw_operation not in allowed_operations:
+            raw_operation = str(memory_inputs.get("operation") or "").strip().lower()
+        if raw_operation not in allowed_operations:
+            raw_operation = self._infer_operation(user_input=user_input, conversation_context=conversation_context)
+        operation = raw_operation if raw_operation in allowed_operations else "search_nodes"
+
+        query = str(planned.get("query") or memory_inputs.get("query") or user_input).strip()
+        content = str(planned.get("content") or memory_inputs.get("content") or self._infer_memory_content(user_input)).strip()
+        entity_name = str(planned.get("entity_name") or memory_inputs.get("entity_name") or "session_memory").strip() or "session_memory"
+
+        raw_names = planned.get("names")
+        if not isinstance(raw_names, list):
+            raw_names = memory_inputs.get("names", [])
+        names = [str(item).strip() for item in raw_names if str(item).strip()] if isinstance(raw_names, list) else []
+        if operation == "open_nodes" and not names:
+            names = self._infer_names(user_input)
+
+        return {
+            "operation": operation,
+            "query": query,
+            "content": content,
+            "entity_name": entity_name,
+            "names": names,
+        }
+
+    def _format_memory_payload(self, payload: dict) -> str:
+        if not isinstance(payload, dict) or not payload:
+            return "[]"
+
+        structured = payload.get("structuredContent")
+        if isinstance(structured, dict):
+            entities = self._format_entities(structured.get("entities"))
+            relations = self._format_relations(structured.get("relations"))
+            if entities or relations:
+                return self._compose_memory_text(entities, relations)
+
+        entities = self._format_entities(payload.get("entities"))
+        relations = self._format_relations(payload.get("relations"))
+        if entities or relations:
+            return self._compose_memory_text(entities, relations)
+
+        text = self._extract_text(payload)
+        if text:
+            return text[: self.max_text_chars]
+        return "[]"
+
+    @staticmethod
+    def _infer_memory_content(user_input: str) -> str:
+        text = (user_input or "").strip()
+        quoted_match = re.search(r'"([^"]+)"', text)
+        if quoted_match:
+            return quoted_match.group(1).strip()
+        single_quote_match = re.search(r"'([^']+)'", text)
+        if single_quote_match:
+            return single_quote_match.group(1).strip()
+        colon_match = re.search(r":\s*(.+)$", text)
+        if colon_match:
+            return colon_match.group(1).strip()
+        return text
+
+    @staticmethod
+    def _infer_operation(user_input: str, conversation_context: str) -> str:
+        text = f"{user_input or ''} {conversation_context or ''}".lower()
+        if any(token in text for token in ("remember", "rmember", "memorize", "memorizar", "memoriza")):
+            return "store_graph"
+        if any(token in text for token in ("open memory", "open nodes", "abrir memoria", "abrir nodos")):
+            return "open_nodes"
+        if any(token in text for token in ("save memory", "store memory", "salve na memoria")):
+            return "add_observations"
+        return "search_nodes"
+
+    @staticmethod
+    def _infer_names(user_input: str) -> list[str]:
+        if not user_input:
+            return []
+        quoted = re.findall(r'"([^"]+)"', user_input)
+        if quoted:
+            return [item.strip() for item in quoted if item.strip()]
+        single_quoted = re.findall(r"'([^']+)'", user_input)
+        if single_quoted:
+            return [item.strip() for item in single_quoted if item.strip()]
+        return []
+
+    def _format_memory_write_payload(self, payload: dict, *, entity_name: str) -> str:
+        if not isinstance(payload, dict):
+            return f"memory write completed for entity '{entity_name}'."
+        text = self._extract_text(payload)
+        if text:
+            return text[: self.max_text_chars]
+        structured = payload.get("structuredContent")
+        if isinstance(structured, dict):
+            added = structured.get("added")
+            if added is not None:
+                return f"memory write completed: {added} observations added to '{entity_name}'."
+        return f"memory write completed for entity '{entity_name}'."
+
+    @staticmethod
+    def _sanitize_candidate_entities(raw_entities: object) -> list[dict]:
+        if not isinstance(raw_entities, list):
+            return []
+        entities: list[dict] = []
+        for item in raw_entities:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            entity_type = str(item.get("entityType", "")).strip() or "unknown"
+            if not name:
+                continue
+            raw_observations = item.get("observations")
+            observations = (
+                [str(obs).strip() for obs in raw_observations if str(obs).strip()]
+                if isinstance(raw_observations, list)
+                else []
+            )
+            entities.append(
+                {
+                    "name": name,
+                    "entityType": entity_type,
+                    "observations": observations,
+                }
+            )
+        deduped: list[dict] = []
+        seen_names: set[str] = set()
+        for entity in entities:
+            normalized = entity["name"].lower()
+            if normalized in seen_names:
+                continue
+            seen_names.add(normalized)
+            deduped.append(entity)
+        return deduped
+
+    @staticmethod
+    def _sanitize_candidate_relations(raw_relations: object) -> list[dict]:
+        if not isinstance(raw_relations, list):
+            return []
+        relations: list[dict] = []
+        for item in raw_relations:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("from", "")).strip()
+            target = str(item.get("to", "")).strip()
+            relation_type = str(item.get("relationType", "")).strip()
+            if not source or not target or not relation_type:
+                continue
+            relations.append({"from": source, "to": target, "relationType": relation_type})
+        deduped: list[dict] = []
+        seen_edges: set[tuple[str, str, str]] = set()
+        for relation in relations:
+            edge_key = (
+                relation["from"].lower(),
+                relation["to"].lower(),
+                relation["relationType"].lower(),
+            )
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            deduped.append(relation)
+        return deduped
+
+    @staticmethod
+    def _filter_relations_by_existing_entities(relations: list[dict], entities: list[dict]) -> list[dict]:
+        if not relations or not entities:
+            return []
+        known = {str(entity.get("name", "")).strip().lower() for entity in entities if str(entity.get("name", "")).strip()}
+        if not known:
+            return []
+        return [
+            relation
+            for relation in relations
+            if str(relation.get("from", "")).strip().lower() in known and str(relation.get("to", "")).strip().lower() in known
+        ]
+
+    def _format_entities(self, raw_entities: object) -> list[str]:
+        if not isinstance(raw_entities, list):
+            return []
+        lines: list[str] = []
+        for entity in raw_entities[: self.max_entities]:
+            if not isinstance(entity, dict):
+                continue
+            name = str(entity.get("name", "")).strip()
+            if not name:
+                continue
+            entity_type = str(entity.get("entityType", "")).strip() or "unknown"
+            raw_observations = entity.get("observations")
+            observations = (
+                [str(item).strip() for item in raw_observations if str(item).strip()]
+                if isinstance(raw_observations, list)
+                else []
+            )
+            if observations:
+                top_observations = "; ".join(observations[: self.max_observations_per_entity])
+                lines.append(f"- entity: {name} ({entity_type}) | observations: {top_observations}")
+            else:
+                lines.append(f"- entity: {name} ({entity_type})")
+        return lines
+
+    @staticmethod
+    def _format_relations(raw_relations: object) -> list[str]:
+        if not isinstance(raw_relations, list):
+            return []
+        lines: list[str] = []
+        for relation in raw_relations:
+            if not isinstance(relation, dict):
+                continue
+            source = str(relation.get("from", "")).strip()
+            target = str(relation.get("to", "")).strip()
+            relation_type = str(relation.get("relationType", "")).strip()
+            if not source or not target or not relation_type:
+                continue
+            lines.append(f"- relation: {source} -[{relation_type}]-> {target}")
+        return lines
+
+    @staticmethod
+    def _extract_text(payload: dict) -> str:
+        for key in ("text", "result", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        raw_content = payload.get("content")
+        if not isinstance(raw_content, list):
+            return ""
+        texts: list[str] = []
+        for item in raw_content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+        return "\n".join(texts).strip()
+
+    def _compose_memory_text(self, entities: list[str], relations: list[str]) -> str:
+        lines: list[str] = []
+        if entities:
+            lines.append("entities:")
+            lines.extend(entities)
+        if relations:
+            lines.append("relations:")
+            lines.extend(relations[: self.max_entities])
+        if not lines:
+            return "[]"
+        return "\n".join(lines)
+
+
+@dataclass
 class ResponderStep:
     prompt_store: PromptStorePort
     llm: TextGeneratorPort
@@ -475,12 +880,14 @@ class ResponderStep:
             filesystem_content=state.get("filesystem_content", ""),
             filesystem_result=state.get("filesystem_result", ""),
         )
+        memory_text = state.get("memory_context", "[]")
         errors_text = self._format_tool_errors(state.get("tool_errors", []))
         prompt = self.prompt_store.render(
             "responder",
             conversation_context=state.get("conversation_context", ""),
             retrieved_documents=docs_text,
             filesystem_context=filesystem_text,
+            memory_context=memory_text,
             tool_errors=errors_text,
             user_input=state["user_input"],
         )
@@ -584,6 +991,59 @@ class FilesystemMcpTool:
         return str(self._delete_file_fn(path))
 
 
+class MemoryMcpTool:
+    def __init__(
+        self,
+        *,
+        search_nodes_fn: Callable[[str], dict],
+        open_nodes_fn: Callable[[list[str]], dict] | None = None,
+        add_observations_fn: Callable[[str, list[str]], dict],
+        create_entities_fn: Callable[[list[dict]], dict] | None = None,
+        create_relations_fn: Callable[[list[dict]], dict] | None = None,
+    ) -> None:
+        self._search_nodes_fn = search_nodes_fn
+        self._open_nodes_fn = open_nodes_fn
+        self._add_observations_fn = add_observations_fn
+        self._create_entities_fn = create_entities_fn
+        self._create_relations_fn = create_relations_fn
+
+    def search_nodes(self, query: str) -> dict:
+        payload = self._search_nodes_fn(query)
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    def open_nodes(self, names: list[str]) -> dict:
+        if self._open_nodes_fn is None:
+            return {}
+        payload = self._open_nodes_fn(names)
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    def add_observations(self, entity_name: str, contents: list[str]) -> dict:
+        payload = self._add_observations_fn(entity_name, contents)
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    def create_entities(self, entities: list[dict]) -> dict:
+        if self._create_entities_fn is None:
+            return {}
+        payload = self._create_entities_fn(entities)
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    def create_relations(self, relations: list[dict]) -> dict:
+        if self._create_relations_fn is None:
+            return {}
+        payload = self._create_relations_fn(relations)
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+
 class RagWorkflowOrchestrator:
     def __init__(
         self,
@@ -592,12 +1052,14 @@ class RagWorkflowOrchestrator:
         retriever: RetrieverStep,
         responder: ResponderStep,
         filesystem: FilesystemStep | None = None,
+        memory: MemoryStep | None = None,
         prefer_langgraph: bool = True,
         logger_instance: logging.Logger | None = None,
     ) -> None:
         self._router = router
         self._retriever = retriever
         self._filesystem = filesystem
+        self._memory = memory
         self._responder = responder
         self._logger = logger_instance or logger
         self._compiled_graph = self._build_graph() if prefer_langgraph else None
@@ -612,6 +1074,7 @@ class RagWorkflowOrchestrator:
             "conversation_context": conversation_context,
             "retrieved_documents": [],
             "filesystem_entries": [],
+            "memory_context": "[]",
             "tool_errors": [],
         }
         if self._compiled_graph is not None:
@@ -652,6 +1115,11 @@ class RagWorkflowOrchestrator:
                     errors.append("filesystem tool requested but not configured.")
                 else:
                     futures["filesystem"] = executor.submit(self._filesystem.execute, state)
+            if "memory" in tools:
+                if self._memory is None:
+                    errors.append("memory tool requested but not configured.")
+                else:
+                    futures["memory"] = executor.submit(self._memory.execute, state)
 
             for task_name, future in futures.items():
                 try:
