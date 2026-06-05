@@ -21,6 +21,7 @@ Browser (localhost:8080)
   -> mcp-server (localhost:8090)
        -> tool registry namespaces: filesystem.* and memory.*
        -> filesystem tools proxied to official prebuilt filesystem MCP server package
+       -> filesystem write/delete events trigger app reindex webhook
        -> memory tools proxied to official prebuilt memory MCP server package (with local fallback store)
   -> postgres (localhost:5432)
        -> documents + chunks tables
@@ -190,6 +191,12 @@ Optional model/runtime vars:
 - `MCP_SERVER_URL`
 - `MCP_TIMEOUT`
 - `MCP_MEMORY_ENABLED`
+- `CONTEXT_ROOT`
+- `INTERNAL_API_TOKEN`
+- `MCP_SYNC_EVENTS_ENABLED`
+- `MCP_SYNC_APP_URL`
+- `MCP_SYNC_EVENTS_PATH`
+- `MCP_SYNC_TIMEOUT_MS`
 - `MEMORY_TOP_K`
 - `MEMORY_MAX_OBSERVATIONS`
 - `PROMPT_STORE_PATH` (default: `app/config/prompt_store.yaml`)
@@ -205,4 +212,5 @@ Optional model/runtime vars:
 ## Notes
 
 - FAISS index is in-memory and rebuilt from DB chunks via `/refresh` or during retrieval when needed.
+- Files written/deleted through `filesystem.write_file` and `filesystem.delete_file` are synced automatically into RAG.
 - PostgreSQL is persistent via `postgres_data` volume.

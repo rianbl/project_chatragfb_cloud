@@ -22,6 +22,20 @@ class ContextService:
         self._limits = limits
         self._logger = logger
 
+    def _resolve_storage_path(self, relative_path: str) -> str:
+        base_root = os.path.normcase(os.path.abspath(self._limits.upload_folder))
+        raw_relative = str(relative_path or "").strip().replace("\\", "/")
+        normalized_relative = os.path.normpath(raw_relative)
+        if normalized_relative in {"", "."}:
+            raise ValueError("Path cannot be empty.")
+        if os.path.isabs(normalized_relative):
+            raise ValueError("Path must be relative to context root.")
+
+        absolute_path = os.path.normcase(os.path.abspath(os.path.join(base_root, normalized_relative)))
+        if absolute_path != base_root and not absolute_path.startswith(f"{base_root}{os.sep}"):
+            raise ValueError("Path is outside context root.")
+        return absolute_path
+
     def current_state(self) -> dict[str, Any]:
         return self._ingestion.load_context_state(
             max_documents=self._limits.max_documents,
@@ -193,6 +207,71 @@ class ContextService:
                 ),
                 "deleted_document_id": document_id,
                 "context": updated_state,
+            },
+            200 if refresh_result["ok"] else refresh_result["status_code"],
+        )
+
+    def sync_filesystem_event(self, operation: str, relative_path: str) -> tuple[dict[str, Any], int]:
+        op = str(operation or "").strip().lower()
+        if op not in {"upsert", "delete"}:
+            return {"error": "Unsupported operation. Use 'upsert' or 'delete'."}, 400
+
+        try:
+            storage_path = self._resolve_storage_path(relative_path)
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+
+        if op == "upsert":
+            filename = os.path.basename(storage_path)
+            if not self._ingestion.is_supported_file(filename):
+                return (
+                    {
+                        "message": f"Filesystem event ignored for unsupported extension: {filename}",
+                        "storage_path": storage_path,
+                        "operation": op,
+                    },
+                    202,
+                )
+
+            if not os.path.exists(storage_path):
+                return {"error": f"File not found for upsert: {relative_path}"}, 404
+
+            page_count = None
+            if os.path.splitext(filename)[1].lower() == ".pdf":
+                page_count = self._ingestion.pdf_page_count(storage_path)
+
+            self._ingestion.delete_document_by_storage_path(
+                storage_path=storage_path,
+                upload_folder=self._limits.upload_folder,
+            )
+            ingestion_result = self._ingestion.ingest_file(
+                file_path=storage_path,
+                original_filename=filename,
+                size_bytes=self._ingestion.file_size_bytes(storage_path),
+                page_count=page_count,
+            )
+            refresh_result = self.refresh_search_index(allow_empty=False)
+            return (
+                {
+                    "message": refresh_result["message"],
+                    "operation": op,
+                    "storage_path": storage_path,
+                    "ingestion": ingestion_result,
+                },
+                200 if refresh_result["ok"] else refresh_result["status_code"],
+            )
+
+        deleted = self._ingestion.delete_document_by_storage_path(
+            storage_path=storage_path,
+            upload_folder=self._limits.upload_folder,
+        )
+        refresh_result = self.refresh_search_index(allow_empty=True)
+        return (
+            {
+                "message": refresh_result["message"],
+                "operation": op,
+                "storage_path": storage_path,
+                "deleted_count": deleted.get("deleted_count", 0),
             },
             200 if refresh_result["ok"] else refresh_result["status_code"],
         )

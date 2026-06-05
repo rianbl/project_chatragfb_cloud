@@ -9,9 +9,12 @@ from modules.ingestion import (
     build_file_path,
     create_schema,
     delete_document_by_id,
+    delete_document_by_storage_path,
+    file_size_bytes,
     ingest_file,
     is_supported_file,
     load_context_state,
+    pdf_page_count,
     safe_remove_file,
     uploaded_file_size_bytes,
     uploaded_pdf_page_count,
@@ -37,6 +40,12 @@ class DefaultIngestionAdapter:
 
     def uploaded_pdf_page_count(self, file_obj: Any) -> int:
         return uploaded_pdf_page_count(file_obj)
+
+    def file_size_bytes(self, file_path: str) -> int:
+        return file_size_bytes(file_path)
+
+    def pdf_page_count(self, file_path: str) -> int:
+        return pdf_page_count(file_path)
 
     def ingest_file(
         self,
@@ -71,6 +80,9 @@ class DefaultIngestionAdapter:
 
     def delete_document_by_id(self, document_id: int, upload_folder: str) -> dict[str, Any]:
         return delete_document_by_id(document_id, upload_folder=upload_folder)
+
+    def delete_document_by_storage_path(self, storage_path: str, upload_folder: str) -> dict[str, Any]:
+        return delete_document_by_storage_path(storage_path, upload_folder=upload_folder, remove_file=False)
 
 
 class DefaultRetrievalAdapter:

@@ -31,6 +31,13 @@ export class ToolRegistry {
       };
     }
 
-    return tool.execute(args, context);
+    try {
+      return await tool.execute(args, context);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 }

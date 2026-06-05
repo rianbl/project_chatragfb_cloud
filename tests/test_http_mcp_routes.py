@@ -32,10 +32,20 @@ class _FakeMcpService:
         return {"ok": True, "tool": tool_name}
 
 
+class _FakeContextService:
+    def __init__(self):
+        self.events = []
+
+    def sync_filesystem_event(self, operation: str, relative_path: str):
+        self.events.append((operation, relative_path))
+        return {"ok": True, "operation": operation, "path": relative_path}, 200
+
+
 class _FakeContainer:
     def __init__(self):
         self.chat_service = _FakeChatService()
         self.mcp_service = _FakeMcpService()
+        self.context_service = _FakeContextService()
 
 
 class HttpMcpRouteTests(unittest.TestCase):
@@ -64,6 +74,17 @@ class HttpMcpRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(container.mcp_service.tool_calls[0], ("filesystem.read_file", {"path": "doc.txt"}))
+
+    def test_internal_filesystem_event_route_calls_context_sync(self):
+        client, container = self._build_client()
+
+        response = client.post(
+            "/internal/filesystem/events",
+            json={"operation": "upsert", "path": "doc.txt"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(container.context_service.events[0], ("upsert", "doc.txt"))
 
 
 if __name__ == "__main__":

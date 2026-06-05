@@ -6,7 +6,8 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "llm_data")
 DATABASE_USER = os.getenv("DATABASE_USER", "admin")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", os.getenv("POSTGRES_PASSWORD", "admin"))
 
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
+CONTEXT_ROOT = os.getenv("CONTEXT_ROOT", os.getenv("UPLOAD_FOLDER", "uploads"))
+UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", CONTEXT_ROOT)
 SUPPORTED_EXTENSIONS = {".csv", ".txt", ".pdf"}
 
 MAX_DOCUMENTS = int(os.getenv("MAX_DOCUMENTS", "3"))
@@ -23,6 +24,7 @@ EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "all-MiniLM-L6-v2")
 MCP_SERVER_ENABLED = os.getenv("MCP_SERVER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://mcp-server:8090").strip()
 MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "10"))
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "").strip()
 MCP_MEMORY_ENABLED = os.getenv("MCP_MEMORY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "5"))
 MEMORY_MAX_OBSERVATIONS = int(os.getenv("MEMORY_MAX_OBSERVATIONS", "3"))

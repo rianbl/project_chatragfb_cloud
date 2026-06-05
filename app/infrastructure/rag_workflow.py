@@ -4,20 +4,22 @@ import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from typing import Callable, Protocol, TypedDict
-
-try:
-    import langchain
-
-    # Enable LangChain debug mode to provide additional visibility into graph execution if supported
-    langchain.debug = True
-except ImportError:
-    pass
+from dataclasses import dataclass
+from typing import Any, Callable, Protocol, TypedDict
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_ROUTER_TOOLS = {"retrieval", "filesystem", "memory"}
+_RETRIEVAL_TOOL_MANIFEST: dict[str, Any] = {
+    "name": "retrieval",
+    "description": "Search inside uploaded documents/chunks in the local RAG context.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query (defaults to user question)."}
+        },
+        "additionalProperties": False,
+    },
+}
 
 
 class RetrievedDocument(TypedDict):
@@ -25,355 +27,275 @@ class RetrievedDocument(TypedDict):
     source: str
 
 
-class FilesystemEntry(TypedDict):
-    name: str
-    is_directory: bool
-
-
 class RagWorkflowState(TypedDict, total=False):
     user_input: str
     conversation_context: str
-    tools: list[str]
-    tool_inputs: dict[str, dict[str, str]]
-    use_retrieval: bool
-    use_filesystem: bool
-    use_memory: bool
-    search_query: str
+    available_tools: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]          # [{"name": str, "arguments": dict}]
     retrieved_documents: list[RetrievedDocument]
-    filesystem_path: str
-    filesystem_operation: str
-    filesystem_entries: list[FilesystemEntry]
-    filesystem_content: str
-    filesystem_result: str
-    memory_query: str
-    memory_context: str
+    tool_results: dict[str, Any]              # tool_name -> raw result
     tool_errors: list[str]
     response: str
 
 
 class PromptStorePort(Protocol):
-    def render(self, prompt_name: str, **variables) -> str:
-        ...
+    def render(self, prompt_name: str, **variables) -> str: ...
 
 
 class TextGeneratorPort(Protocol):
-    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str:
-        ...
+    def generate(self, prompt: str, *, temperature: float, max_new_tokens: int) -> str: ...
 
 
 class RetrievingToolPort(Protocol):
-    def retrieve(self, search_query: str) -> list[RetrievedDocument]:
-        ...
+    def retrieve(self, search_query: str) -> list[RetrievedDocument]: ...
 
 
-class FilesystemToolPort(Protocol):
-    def list_directory(self, path: str = ".") -> list[FilesystemEntry]:
-        ...
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    def read_file(self, path: str) -> str:
-        ...
-
-    def write_file(self, path: str, content: str) -> str:
-        ...
-
-    def delete_file(self, path: str) -> str:
-        ...
-
-
-class MemoryToolPort(Protocol):
-    def search_nodes(self, query: str) -> dict:
-        ...
-
-    def open_nodes(self, names: list[str]) -> dict:
-        ...
-
-    def add_observations(self, entity_name: str, contents: list[str]) -> dict:
-        ...
-
-    def create_entities(self, entities: list[dict]) -> dict:
-        ...
-
-    def create_relations(self, relations: list[dict]) -> dict:
-        ...
+def _normalize_manifests(raw: object) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raw = []
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        result.append({
+            "name": name,
+            "description": str(item.get("description", "")).strip(),
+            "inputSchema": item.get("inputSchema") if isinstance(item.get("inputSchema"), dict) else {},
+        })
+    # always include retrieval
+    if not any(m["name"] == "retrieval" for m in result):
+        result.insert(0, dict(_RETRIEVAL_TOOL_MANIFEST))
+    return result
 
 
-class RouterDecisionPolicyPort(Protocol):
-    def decide_tools(
-        self,
-        *,
-        user_input: str,
-        conversation_context: str,
-        model_tools: list[str],
-        model_tool_inputs: dict[str, dict[str, str]],
-    ) -> list[str]:
-        ...
-
-
-class ConservativeRouterDecisionPolicy:
-    """Biases routing toward retrieval and enables filesystem when file-system intent is explicit."""
-
-    _OBVIOUS_DIRECT_RESPONSE_PATTERNS = (
-        r"^\s*(oi|ola|olá|hello|hi|hey)\b",
-        r"^\s*(obrigad[oa]|thanks|thank you)\b",
-        r"^\s*(bom dia|boa tarde|boa noite)\b",
-        r"\bqual\s+a\s+capital\b",
-        r"\bqual\s+e\s+a\s+capital\b",
-        r"\bqual\s+é\s+a\s+capital\b",
-        r"\bwhat\s+is\s+the\s+capital\b",
-        r"^\s*\d+(\s*[\+\-\*/]\s*\d+)+\s*\??\s*$",
-        r"^\s*quanto\s+e\s+\d+(\s*[\+\-\*/]\s*\d+)+\s*\??\s*$",
+def _render_manifest(manifests: list[dict[str, Any]]) -> str:
+    return json.dumps(
+        [{"name": m["name"], "description": m["description"], "inputSchema": m["inputSchema"]} for m in manifests],
+        ensure_ascii=False,
+        indent=2,
     )
-    _FILESYSTEM_HINT_PATTERNS = (
-        r"\barquivos?\b",
-        r"\bpasta\b",
-        r"\bdiret[oó]rio\b",
-        r"\bdirectory\b",
-        r"\bfolder\b",
-        r"\bfile\s*system\b",
-        r"\bfilesystem\b",
-        r"\blist(ar|e)?\s+os?\s+arquivos?\b",
-        r"\bdelete\b",
-        r"\bdeletar\b",
-        r"\bapagar\b",
-        r"\bremover\b",
-        r"\bexcluir\b",
-    )
-    _DOCUMENT_HINT_PATTERNS = (
-        r"\bmanual\b",
-        r"\bpdf\b",
-        r"\bdocumento\b",
-        r"\bdocument\b",
-        r"\brelat[oó]rio\b",
-        r"\bcontrato\b",
-        r"\bpol[ií]tica\b",
-    )
-    _MEMORY_HINT_PATTERNS = (
-        r"\blembra\b",
-        r"\blembre\b",
-        r"\brmember\b",
-        r"\bremember\b",
-        r"\bmemor(y|ize|ized|izing)\b",
-        r"\bmemoriza(r|do|da|cao|ção)?\b",
-        r"\bmem[oó]ria\b",
-        r"\bmemory\b",
-        r"\bprefer[eê]ncia\b",
-        r"\bpreference\b",
-        r"\bgosto\b",
-        r"\blike\b",
-        r"\bperfil\b",
-        r"\bprofile\b",
-    )
-    _AFFIRMATIVE_INPUTS = {"yes", "sim", "ok", "okay", "pode", "prossiga", "continue", "confirmo", "confirma"}
-
-    def __init__(self, *, memory_enabled: bool = True) -> None:
-        self._memory_enabled = memory_enabled
-
-    def decide_tools(
-        self,
-        *,
-        user_input: str,
-        conversation_context: str,
-        model_tools: list[str],
-        model_tool_inputs: dict[str, dict[str, str]],
-    ) -> list[str]:
-        tools = self._normalize_tools(model_tools)
-        if not self._memory_enabled:
-            tools = [tool for tool in tools if tool != "memory"]
-        normalized_input = " ".join((user_input or "").lower().split())
-        normalized_context = " ".join((conversation_context or "").lower().split())
-        filesystem_inputs = model_tool_inputs.get("filesystem", {}) if isinstance(model_tool_inputs, dict) else {}
-        memory_inputs = model_tool_inputs.get("memory", {}) if isinstance(model_tool_inputs, dict) else {}
-        filesystem_operation = str(filesystem_inputs.get("operation", "")).strip().lower()
-        memory_operation = str(memory_inputs.get("operation", "")).strip().lower()
-        is_affirmative_followup = (
-            normalized_input in self._AFFIRMATIVE_INPUTS
-            and self._looks_like_filesystem_request(normalized_context)
-        )
-        pure_filesystem_action = filesystem_operation in {
-            "write_file",
-            "read_file",
-            "delete_file",
-            "list_directory",
-            "write",
-            "read",
-            "delete",
-            "list",
-        } or self._looks_like_filesystem_request(normalized_input) or is_affirmative_followup
-        pure_memory_action = (
-            memory_operation in {"search_nodes", "open_nodes", "read_graph", "add_observations", "store_graph", "search", "open", "read", "memorize"}
-            or self._looks_like_memory_request(normalized_input)
-        )
-
-        if pure_filesystem_action and "filesystem" not in tools:
-            tools.append("filesystem")
-        if self._memory_enabled and pure_memory_action and "memory" not in tools:
-            tools.append("memory")
-
-        if (
-            "filesystem" in tools
-            and "retrieval" in tools
-            and pure_filesystem_action
-            and not self._looks_like_document_request(normalized_input)
-            and not (conversation_context or "").strip()
-        ):
-            tools = [tool_name for tool_name in tools if tool_name != "retrieval"]
-        if (
-            "memory" in tools
-            and "retrieval" in tools
-            and pure_memory_action
-            and not self._looks_like_document_request(normalized_input)
-            and not (conversation_context or "").strip()
-        ):
-            tools = [tool_name for tool_name in tools if tool_name != "retrieval"]
-
-        if "retrieval" not in tools:
-            input_looks_like_document_request = self._looks_like_document_request(normalized_input)
-            context_looks_like_document_request = self._looks_like_document_request(normalized_context)
-            if ("filesystem" in tools or "memory" in tools) and not input_looks_like_document_request and not context_looks_like_document_request:
-                return tools
-            if context_looks_like_document_request:
-                logger.info("RouterDecisionPolicy override: retrieval forced by available conversation context.")
-                tools.append("retrieval")
-            elif not normalized_input:
-                tools.append("retrieval")
-            elif not self._is_obvious_direct_question(normalized_input):
-                logger.info("RouterDecisionPolicy override: conservative retrieval applied.")
-                tools.append("retrieval")
-
-        return tools
-
-    @staticmethod
-    def _normalize_tools(model_tools: list[str]) -> list[str]:
-        ordered: list[str] = []
-        for item in model_tools:
-            normalized = str(item).strip().lower()
-            if normalized in _SUPPORTED_ROUTER_TOOLS and normalized not in ordered:
-                ordered.append(normalized)
-        return ordered
-
-    def _is_obvious_direct_question(self, normalized_input: str) -> bool:
-        for pattern in self._OBVIOUS_DIRECT_RESPONSE_PATTERNS:
-            if re.search(pattern, normalized_input):
-                return True
-        return False
-
-    def _looks_like_filesystem_request(self, normalized_input: str) -> bool:
-        for pattern in self._FILESYSTEM_HINT_PATTERNS:
-            if re.search(pattern, normalized_input):
-                return True
-        return False
-
-    def _looks_like_document_request(self, normalized_input: str) -> bool:
-        for pattern in self._DOCUMENT_HINT_PATTERNS:
-            if re.search(pattern, normalized_input):
-                return True
-        return False
-
-    def _looks_like_memory_request(self, normalized_input: str) -> bool:
-        for pattern in self._MEMORY_HINT_PATTERNS:
-            if re.search(pattern, normalized_input):
-                return True
-        return False
 
 
-def _extract_router_json_object(raw_output: str) -> dict | None:
+def _parse_tool_calls(raw_output: str, *, available_names: set[str]) -> list[dict[str, Any]]:
+    """Parse LLM output into a list of {name, arguments} dicts."""
     text = (raw_output or "").strip()
-    if not text:
-        return None
+    payload: dict | None = None
+
+    # Strip markdown code fences if present
+    code_fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if code_fence:
+        text = code_fence.group(1).strip()
 
     try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
+        payload = json.loads(text)
     except json.JSONDecodeError:
-        pass
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                payload = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
 
-    json_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group(0))
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-    return None
+    if isinstance(payload, dict):
+        calls: list[dict[str, Any]] = []
+        seen: set[str] = set()
 
+        # preferred: {"tool_calls": [{"name": ..., "arguments": {...}}]}
+        if isinstance(payload.get("tool_calls"), list):
+            for item in payload["tool_calls"]:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip().lower()
+                if name not in available_names or name in seen:
+                    continue
+                seen.add(name)
+                args = item.get("arguments") or {}
+                calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+            return calls
 
-def _parse_router_output(raw_output: str) -> tuple[list[str], dict[str, dict[str, str]]]:
-    payload = _extract_router_json_object(raw_output)
-    if payload is None:
-        lowered = (raw_output or "").lower()
-        if '"use_retrieval": false' in lowered:
-            return ([], {})
-        if '"use_retrieval": true' in lowered:
-            return (["retrieval"], {})
-        return ([], {})
+        # fallback: {"tools": [...], "tool_inputs": {...}}
+        if isinstance(payload.get("tools"), list):
+            tool_inputs: dict = payload.get("tool_inputs") or {}
+            for name in payload["tools"]:
+                name = str(name).strip().lower()
+                if name not in available_names or name in seen:
+                    continue
+                seen.add(name)
+                args = tool_inputs.get(name) or {}
+                calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+            return calls
 
-    if isinstance(payload.get("tools"), list):
-        tools = [str(item).strip().lower() for item in payload["tools"] if isinstance(item, str)]
-        tool_inputs = _sanitize_tool_inputs(payload.get("tool_inputs"))
-        return (tools, tool_inputs)
+        # single tool object: {"name": "...", "arguments": {...}}
+        if isinstance(payload.get("name"), str):
+            name = str(payload["name"]).strip().lower()
+            if name in available_names:
+                args = payload.get("arguments") or payload.get("parameters") or {}
+                return [{"name": name, "arguments": args if isinstance(args, dict) else {}}]
 
-    if isinstance(payload.get("use_retrieval"), bool):
-        if payload["use_retrieval"]:
-            return (["retrieval"], {})
-        return ([], {})
-
-    return ([], {})
-
-
-def _sanitize_tool_inputs(raw_tool_inputs: object) -> dict[str, dict[str, str]]:
-    if not isinstance(raw_tool_inputs, dict):
-        return {}
-    sanitized: dict[str, dict[str, str]] = {}
-    for tool_name, tool_value in raw_tool_inputs.items():
-        normalized_name = str(tool_name).strip().lower()
-        if normalized_name not in _SUPPORTED_ROUTER_TOOLS:
+    # Last resort: scan raw text for any available tool name mentioned
+    found: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for name in sorted(available_names):  # sorted for determinism
+        if name in seen_names:
             continue
-        if not isinstance(tool_value, dict):
-            continue
-        tool_payload: dict[str, str] = {}
-        for key, value in tool_value.items():
-            if value is None:
-                continue
-            if isinstance(value, (str, int, float, bool)):
-                tool_payload[str(key)] = str(value)
-        sanitized[normalized_name] = tool_payload
-    return sanitized
+        # match whole tool name as word boundary in the raw text
+        if re.search(re.escape(name), (raw_output or ""), re.IGNORECASE):
+            found.append({"name": name, "arguments": {}})
+            seen_names.add(name)
+    # Only use text-scan fallback if exactly one tool was found (ambiguous = skip)
+    if len(found) == 1:
+        return found
 
+    return []
+
+
+def _is_surgical_read_request(user_input: str) -> bool:
+    lowered = (user_input or "").lower()
+    filename_pattern = re.compile(r"\b[\w./-]+\.[a-z0-9]{1,10}\b")
+    read_markers = (
+        "read_file",
+        "leia",
+        "conteudo exato",
+        "conteúdo exato",
+        "literal",
+        "header",
+        "cabecalho",
+        "cabeçalho",
+        "csv",
+        "linha",
+        "linhas",
+        "debug",
+        "transform",
+        "regex",
+    )
+    return bool(filename_pattern.search(lowered)) and any(marker in lowered for marker in read_markers)
+
+
+def _looks_semantic_context_query(user_input: str) -> bool:
+    lowered = (user_input or "").lower()
+    semantic_markers = (
+        "resuma",
+        "summary",
+        "summarize",
+        "compare",
+        "compare com",
+        "analise",
+        "analyze",
+        "o que diz",
+        "what does",
+        "documento",
+        "arquivo",
+        "manual",
+        "contrato",
+        "contexto",
+        "upload",
+    )
+    operational_markers = (
+        "liste",
+        "list",
+        "crie",
+        "create file",
+        "delete",
+        "apague",
+        "escreva",
+        "write file",
+        "renomeie",
+        "rename",
+    )
+    if any(marker in lowered for marker in operational_markers) and not any(
+        marker in lowered for marker in semantic_markers
+    ):
+        return False
+    return any(marker in lowered for marker in semantic_markers)
+
+
+def _apply_routing_policy(
+    tool_calls: list[dict[str, Any]],
+    *,
+    user_input: str,
+    available_names: set[str],
+) -> list[dict[str, Any]]:
+    if "retrieval" not in available_names:
+        return tool_calls
+
+    names = [str(call.get("name", "")).strip().lower() for call in tool_calls]
+    has_memory = any(name.startswith("memory.") for name in names)
+    has_filesystem_non_read = any(name.startswith("filesystem.") and name != "filesystem.read_file" for name in names)
+    has_retrieval = "retrieval" in names
+    has_read = "filesystem.read_file" in names
+    surgical_read = _is_surgical_read_request(user_input)
+
+    if has_retrieval and has_read and not surgical_read:
+        tool_calls = [call for call in tool_calls if call.get("name") != "filesystem.read_file"]
+        has_read = False
+
+    if has_read and not has_retrieval and not surgical_read:
+        tool_calls = [call for call in tool_calls if call.get("name") != "filesystem.read_file"]
+        has_retrieval = False
+
+    if (
+        not has_retrieval
+        and not has_memory
+        and not has_filesystem_non_read
+        and _looks_semantic_context_query(user_input)
+    ):
+        tool_calls.insert(0, {"name": "retrieval", "arguments": {"query": user_input}})
+
+    return tool_calls
+
+
+def _format_docs(documents: list[RetrievedDocument]) -> str:
+    if not documents:
+        return "[]"
+    return "\n".join(
+        f"- source: {d.get('source', 'unknown')}\n  content: {d.get('content', '')}"
+        for d in documents
+    )
+
+
+def _format_tool_results(results: dict[str, Any]) -> str:
+    if not results:
+        return "[]"
+    return json.dumps(results, ensure_ascii=False)[:4000]
+
+
+# ---------------------------------------------------------------------------
+# Steps
+# ---------------------------------------------------------------------------
 
 @dataclass
 class RouterStep:
     prompt_store: PromptStorePort
     llm: TextGeneratorPort
-    decision_policy: RouterDecisionPolicyPort = field(default_factory=ConservativeRouterDecisionPolicy)
 
     def execute(self, state: RagWorkflowState) -> RagWorkflowState:
-        logger.info("RouterStep: selecting tools for current user input.")
+        manifests = _normalize_manifests(state.get("available_tools", []))
+        available_names = {m["name"] for m in manifests}
         prompt = self.prompt_store.render(
             "router",
             conversation_context=state.get("conversation_context", ""),
             user_input=state["user_input"],
+            available_tools_manifest=_render_manifest(manifests),
         )
-        raw_output = self.llm.generate(prompt, temperature=0.0, max_new_tokens=128)
-        model_tools, tool_inputs = _parse_router_output(raw_output)
-        selected_tools = self.decision_policy.decide_tools(
-            user_input=state["user_input"],
-            conversation_context=state.get("conversation_context", ""),
-            model_tools=model_tools,
-            model_tool_inputs=tool_inputs,
+        raw = self.llm.generate(prompt, temperature=0.0, max_new_tokens=512)
+        logger.info("RouterStep: raw_output=%r", raw[:400] if raw else "")
+        tool_calls = _parse_tool_calls(raw, available_names=available_names)
+        tool_calls = _apply_routing_policy(
+            tool_calls,
+            user_input=state.get("user_input", ""),
+            available_names=available_names,
         )
-        filtered_tool_inputs = {
-            tool_name: tool_inputs.get(tool_name, {}) for tool_name in selected_tools if tool_name in _SUPPORTED_ROUTER_TOOLS
-        }
-        logger.info("RouterStep decision: tools=%s", selected_tools)
-        return {
-            "tools": selected_tools,
-            "tool_inputs": filtered_tool_inputs,
-            "use_retrieval": "retrieval" in selected_tools,
-            "use_filesystem": "filesystem" in selected_tools,
-            "use_memory": "memory" in selected_tools,
-        }
+        logger.info("RouterStep: tool_calls=%s", [c["name"] for c in tool_calls])
+        return {"tool_calls": tool_calls}
 
 
 @dataclass
@@ -382,481 +304,23 @@ class RetrieverStep:
     llm: TextGeneratorPort
     tool: RetrievingToolPort
 
-    def execute(self, state: RagWorkflowState) -> RagWorkflowState:
-        logger.info("RetrieverStep: generating search query and retrieving documents.")
+    def execute(self, state: RagWorkflowState, arguments: dict[str, Any]) -> list[RetrievedDocument]:
+        query = str(arguments.get("query", "")).strip() or state["user_input"]
         prompt = self.prompt_store.render(
             "retriever",
             conversation_context=state.get("conversation_context", ""),
-            user_input=state["user_input"],
+            user_input=query,
         )
-        generated_query = self.llm.generate(prompt, temperature=0.0, max_new_tokens=128).strip()
-        search_query = generated_query.splitlines()[0].strip() if generated_query else ""
-        if not search_query:
-            search_query = state["user_input"].strip()
-            logger.warning("RetrieverStep: empty query generated. Falling back to user input.")
-        logger.info("RetrieverStep: search query generated: '%s'", search_query)
+        generated = self.llm.generate(prompt, temperature=0.0, max_new_tokens=128).strip()
+        search_query = generated.splitlines()[0].strip() if generated else query
+        logger.info("RetrieverStep: query='%s'", search_query)
         try:
-            retrieved_documents = self.tool.retrieve(search_query)
+            docs = self.tool.retrieve(search_query)
         except ValueError as exc:
             if "No chunks found in database" not in str(exc):
                 raise
-            logger.info("RetrieverStep: no chunks available in database, continuing with empty retrieval context.")
-            retrieved_documents = []
-        logger.info("RetrieverStep: retrieved %d documents.", len(retrieved_documents))
-        return {
-            "search_query": search_query,
-            "retrieved_documents": retrieved_documents,
-        }
-
-
-@dataclass
-class FilesystemStep:
-    tool: FilesystemToolPort
-
-    def execute(self, state: RagWorkflowState) -> RagWorkflowState:
-        tool_inputs = state.get("tool_inputs", {}) or {}
-        fs_inputs = tool_inputs.get("filesystem", {}) if isinstance(tool_inputs, dict) else {}
-        user_input = state.get("user_input", "")
-        conversation_context = state.get("conversation_context", "")
-        operation = str(fs_inputs.get("operation", "")).strip().lower()
-        if not operation:
-            operation = self._infer_operation(user_input, conversation_context)
-        path = str(fs_inputs.get("path", "")).strip()
-        if not path:
-            path = self._infer_path(user_input, operation, state.get("conversation_context", ""))
-        if not path:
-            path = "."
-        content = str(fs_inputs.get("content", ""))
-        if operation in {"write", "write_file", "create", "touch"} and not content:
-            content = self._infer_content(user_input)
-
-        if operation in {"write", "write_file", "create", "touch"}:
-            logger.info("FilesystemStep: writing file path='%s'.", path)
-            write_result = self.tool.write_file(path=path, content=content)
-            return {
-                "filesystem_operation": "write_file",
-                "filesystem_path": path,
-                "filesystem_result": write_result,
-                "filesystem_entries": [],
-                "filesystem_content": "",
-            }
-
-        if operation in {"read", "read_file", "cat"}:
-            logger.info("FilesystemStep: reading file path='%s'.", path)
-            file_content = self.tool.read_file(path=path)
-            return {
-                "filesystem_operation": "read_file",
-                "filesystem_path": path,
-                "filesystem_content": file_content,
-                "filesystem_entries": [],
-            }
-
-        if operation in {"delete", "delete_file", "remove", "rm"}:
-            logger.info("FilesystemStep: deleting file path='%s'.", path)
-            delete_result = self.tool.delete_file(path=path)
-            return {
-                "filesystem_operation": "delete_file",
-                "filesystem_path": path,
-                "filesystem_result": delete_result,
-                "filesystem_entries": [],
-                "filesystem_content": "",
-            }
-
-        logger.info("FilesystemStep: listing directory path='%s'.", path)
-        entries = self.tool.list_directory(path=path)
-        logger.info("FilesystemStep: listed %d entries for path='%s'.", len(entries), path)
-        return {
-            "filesystem_operation": "list_directory",
-            "filesystem_path": path,
-            "filesystem_entries": entries,
-            "filesystem_content": "",
-        }
-
-    @staticmethod
-    def _infer_operation(user_input: str, conversation_context: str = "") -> str:
-        text = (user_input or "").lower()
-        if any(token in text for token in ("delete", "deletar", "apagar", "remover", "excluir", "rm ")):
-            return "delete_file"
-        if any(token in text for token in ("crie", "criar", "create", "write", "escreva", "salve")):
-            return "write_file"
-        if any(token in text for token in ("leia", "read", "mostrar conteudo", "mostre conteudo", "cat ")):
-            return "read_file"
-        if (
-            text.strip() in {"yes", "sim", "ok", "okay", "pode", "prossiga", "continue", "confirmo", "confirma"}
-            and any(
-                token in (conversation_context or "").lower()
-                for token in ("delete", "deletar", "apagar", "remover", "excluir", "arquivo")
-            )
-        ):
-            return "delete_file"
-        return "list_directory"
-
-    @staticmethod
-    def _infer_path(user_input: str, operation: str, conversation_context: str = "") -> str:
-        text = (user_input or "")
-        path_match = re.search(r"([a-zA-Z0-9_\-./]+?\.[a-zA-Z0-9]{1,8})", text)
-        if path_match:
-            return path_match.group(1)
-        context_match = re.search(r"([a-zA-Z0-9_\-./]+?\.[a-zA-Z0-9]{1,8})", conversation_context or "")
-        if context_match:
-            return context_match.group(1)
-        if operation in {"write", "write_file", "create", "touch"}:
-            return "generated.txt"
-        return "."
-
-    @staticmethod
-    def _infer_content(user_input: str) -> str:
-        text = user_input or ""
-        quoted_match = re.search(r'"([^"]+)"', text)
-        if quoted_match:
-            return quoted_match.group(1)
-        single_match = re.search(r"'([^']+)'", text)
-        if single_match:
-            return single_match.group(1)
-        return ""
-
-
-@dataclass
-class MemoryStep:
-    tool: MemoryToolPort
-    operation_planner: Callable[[str, str], dict] | None = None
-    graph_builder: Callable[[str, str], dict] | None = None
-    max_entities: int = 8
-    max_observations_per_entity: int = 3
-    max_text_chars: int = 2000
-
-    def execute(self, state: RagWorkflowState) -> RagWorkflowState:
-        tool_inputs = state.get("tool_inputs", {}) or {}
-        memory_inputs = tool_inputs.get("memory", {}) if isinstance(tool_inputs, dict) else {}
-        user_input = state.get("user_input", "")
-        conversation_context = state.get("conversation_context", "")
-        planned = self._build_operation_plan(
-            user_input=user_input,
-            conversation_context=conversation_context,
-            memory_inputs=memory_inputs if isinstance(memory_inputs, dict) else {},
-        )
-        operation = planned.get("operation", "search_nodes")
-        query = planned.get("query", "")
-        names = planned.get("names", [])
-
-        if operation in {"add_observations", "memorize", "store_graph"}:
-            content = planned.get("content", "")
-            if not content:
-                return {
-                    "memory_query": "",
-                    "memory_context": "memory write skipped: empty content.",
-                }
-            entity_name = planned.get("entity_name", "session_memory")
-            graph_summary = ""
-            if operation in {"memorize", "store_graph"} and self.graph_builder is not None:
-                logger.info("MemoryStep: extracting graph from memory content.")
-                candidate_graph = self.graph_builder(content, conversation_context)
-                entities = self._sanitize_candidate_entities(candidate_graph.get("entities"))
-                relations = self._sanitize_candidate_relations(candidate_graph.get("relations"))
-                relations = self._filter_relations_by_existing_entities(relations, entities)
-                if entities:
-                    self.tool.create_entities(entities)
-                    if relations:
-                        self.tool.create_relations(relations)
-                    graph_summary = (
-                        f"memory graph updated: entities={len(entities)} relations={len(relations)}."
-                    )
-
-            if graph_summary:
-                return {
-                    "memory_query": "",
-                    "memory_context": graph_summary,
-                }
-
-            logger.info("MemoryStep: storing memory observation for entity='%s'.", entity_name)
-            payload = self.tool.add_observations(entity_name=entity_name, contents=[content])
-            return {
-                "memory_query": "",
-                "memory_context": self._format_memory_write_payload(payload, entity_name=entity_name),
-            }
-
-        if operation == "open_nodes":
-            if not names:
-                return {
-                    "memory_query": "",
-                    "memory_context": "[]",
-                }
-            logger.info("MemoryStep: opening memory nodes names=%s.", names)
-            payload = self.tool.open_nodes(names=names)
-            memory_context = self._format_memory_payload(payload)
-            return {
-                "memory_query": ", ".join(names),
-                "memory_context": memory_context,
-            }
-
-        if not query:
-            return {
-                "memory_query": "",
-                "memory_context": "[]",
-            }
-
-        logger.info("MemoryStep: searching memory nodes with query='%s'.", query)
-        payload = self.tool.search_nodes(query=query)
-        memory_context = self._format_memory_payload(payload)
-        logger.info("MemoryStep: memory context generated (length=%d).", len(memory_context))
-        return {
-            "memory_query": query,
-            "memory_context": memory_context,
-        }
-
-    def _build_operation_plan(self, *, user_input: str, conversation_context: str, memory_inputs: dict[str, str]) -> dict:
-        planned: dict = {}
-        if self.operation_planner is not None:
-            try:
-                planner_output = self.operation_planner(user_input, conversation_context)
-                if isinstance(planner_output, dict):
-                    planned = planner_output
-            except Exception:  # noqa: BLE001
-                logger.exception("MemoryStep: operation planner failed, using fallback logic.")
-
-        allowed_operations = {"search_nodes", "open_nodes", "add_observations", "memorize", "store_graph"}
-        raw_operation = str(planned.get("operation") or "").strip().lower()
-        if raw_operation not in allowed_operations:
-            raw_operation = str(memory_inputs.get("operation") or "").strip().lower()
-        if raw_operation not in allowed_operations:
-            raw_operation = self._infer_operation(user_input=user_input, conversation_context=conversation_context)
-        operation = raw_operation if raw_operation in allowed_operations else "search_nodes"
-
-        query = str(planned.get("query") or memory_inputs.get("query") or user_input).strip()
-        content = str(planned.get("content") or memory_inputs.get("content") or self._infer_memory_content(user_input)).strip()
-        entity_name = str(planned.get("entity_name") or memory_inputs.get("entity_name") or "session_memory").strip() or "session_memory"
-
-        raw_names = planned.get("names")
-        if not isinstance(raw_names, list):
-            raw_names = memory_inputs.get("names", [])
-        names = [str(item).strip() for item in raw_names if str(item).strip()] if isinstance(raw_names, list) else []
-        if operation == "open_nodes" and not names:
-            names = self._infer_names(user_input)
-
-        return {
-            "operation": operation,
-            "query": query,
-            "content": content,
-            "entity_name": entity_name,
-            "names": names,
-        }
-
-    def _format_memory_payload(self, payload: dict) -> str:
-        if not isinstance(payload, dict) or not payload:
-            return "[]"
-
-        structured = payload.get("structuredContent")
-        if isinstance(structured, dict):
-            entities = self._format_entities(structured.get("entities"))
-            relations = self._format_relations(structured.get("relations"))
-            if entities or relations:
-                return self._compose_memory_text(entities, relations)
-
-        entities = self._format_entities(payload.get("entities"))
-        relations = self._format_relations(payload.get("relations"))
-        if entities or relations:
-            return self._compose_memory_text(entities, relations)
-
-        text = self._extract_text(payload)
-        if text:
-            return text[: self.max_text_chars]
-        return "[]"
-
-    @staticmethod
-    def _infer_memory_content(user_input: str) -> str:
-        text = (user_input or "").strip()
-        quoted_match = re.search(r'"([^"]+)"', text)
-        if quoted_match:
-            return quoted_match.group(1).strip()
-        single_quote_match = re.search(r"'([^']+)'", text)
-        if single_quote_match:
-            return single_quote_match.group(1).strip()
-        colon_match = re.search(r":\s*(.+)$", text)
-        if colon_match:
-            return colon_match.group(1).strip()
-        return text
-
-    @staticmethod
-    def _infer_operation(user_input: str, conversation_context: str) -> str:
-        text = f"{user_input or ''} {conversation_context or ''}".lower()
-        if any(token in text for token in ("remember", "rmember", "memorize", "memorizar", "memoriza")):
-            return "store_graph"
-        if any(token in text for token in ("open memory", "open nodes", "abrir memoria", "abrir nodos")):
-            return "open_nodes"
-        if any(token in text for token in ("save memory", "store memory", "salve na memoria")):
-            return "add_observations"
-        return "search_nodes"
-
-    @staticmethod
-    def _infer_names(user_input: str) -> list[str]:
-        if not user_input:
-            return []
-        quoted = re.findall(r'"([^"]+)"', user_input)
-        if quoted:
-            return [item.strip() for item in quoted if item.strip()]
-        single_quoted = re.findall(r"'([^']+)'", user_input)
-        if single_quoted:
-            return [item.strip() for item in single_quoted if item.strip()]
-        return []
-
-    def _format_memory_write_payload(self, payload: dict, *, entity_name: str) -> str:
-        if not isinstance(payload, dict):
-            return f"memory write completed for entity '{entity_name}'."
-        text = self._extract_text(payload)
-        if text:
-            return text[: self.max_text_chars]
-        structured = payload.get("structuredContent")
-        if isinstance(structured, dict):
-            added = structured.get("added")
-            if added is not None:
-                return f"memory write completed: {added} observations added to '{entity_name}'."
-        return f"memory write completed for entity '{entity_name}'."
-
-    @staticmethod
-    def _sanitize_candidate_entities(raw_entities: object) -> list[dict]:
-        if not isinstance(raw_entities, list):
-            return []
-        entities: list[dict] = []
-        for item in raw_entities:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            entity_type = str(item.get("entityType", "")).strip() or "unknown"
-            if not name:
-                continue
-            raw_observations = item.get("observations")
-            observations = (
-                [str(obs).strip() for obs in raw_observations if str(obs).strip()]
-                if isinstance(raw_observations, list)
-                else []
-            )
-            entities.append(
-                {
-                    "name": name,
-                    "entityType": entity_type,
-                    "observations": observations,
-                }
-            )
-        deduped: list[dict] = []
-        seen_names: set[str] = set()
-        for entity in entities:
-            normalized = entity["name"].lower()
-            if normalized in seen_names:
-                continue
-            seen_names.add(normalized)
-            deduped.append(entity)
-        return deduped
-
-    @staticmethod
-    def _sanitize_candidate_relations(raw_relations: object) -> list[dict]:
-        if not isinstance(raw_relations, list):
-            return []
-        relations: list[dict] = []
-        for item in raw_relations:
-            if not isinstance(item, dict):
-                continue
-            source = str(item.get("from", "")).strip()
-            target = str(item.get("to", "")).strip()
-            relation_type = str(item.get("relationType", "")).strip()
-            if not source or not target or not relation_type:
-                continue
-            relations.append({"from": source, "to": target, "relationType": relation_type})
-        deduped: list[dict] = []
-        seen_edges: set[tuple[str, str, str]] = set()
-        for relation in relations:
-            edge_key = (
-                relation["from"].lower(),
-                relation["to"].lower(),
-                relation["relationType"].lower(),
-            )
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            deduped.append(relation)
-        return deduped
-
-    @staticmethod
-    def _filter_relations_by_existing_entities(relations: list[dict], entities: list[dict]) -> list[dict]:
-        if not relations or not entities:
-            return []
-        known = {str(entity.get("name", "")).strip().lower() for entity in entities if str(entity.get("name", "")).strip()}
-        if not known:
-            return []
-        return [
-            relation
-            for relation in relations
-            if str(relation.get("from", "")).strip().lower() in known and str(relation.get("to", "")).strip().lower() in known
-        ]
-
-    def _format_entities(self, raw_entities: object) -> list[str]:
-        if not isinstance(raw_entities, list):
-            return []
-        lines: list[str] = []
-        for entity in raw_entities[: self.max_entities]:
-            if not isinstance(entity, dict):
-                continue
-            name = str(entity.get("name", "")).strip()
-            if not name:
-                continue
-            entity_type = str(entity.get("entityType", "")).strip() or "unknown"
-            raw_observations = entity.get("observations")
-            observations = (
-                [str(item).strip() for item in raw_observations if str(item).strip()]
-                if isinstance(raw_observations, list)
-                else []
-            )
-            if observations:
-                top_observations = "; ".join(observations[: self.max_observations_per_entity])
-                lines.append(f"- entity: {name} ({entity_type}) | observations: {top_observations}")
-            else:
-                lines.append(f"- entity: {name} ({entity_type})")
-        return lines
-
-    @staticmethod
-    def _format_relations(raw_relations: object) -> list[str]:
-        if not isinstance(raw_relations, list):
-            return []
-        lines: list[str] = []
-        for relation in raw_relations:
-            if not isinstance(relation, dict):
-                continue
-            source = str(relation.get("from", "")).strip()
-            target = str(relation.get("to", "")).strip()
-            relation_type = str(relation.get("relationType", "")).strip()
-            if not source or not target or not relation_type:
-                continue
-            lines.append(f"- relation: {source} -[{relation_type}]-> {target}")
-        return lines
-
-    @staticmethod
-    def _extract_text(payload: dict) -> str:
-        for key in ("text", "result", "message"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-
-        raw_content = payload.get("content")
-        if not isinstance(raw_content, list):
-            return ""
-        texts: list[str] = []
-        for item in raw_content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    texts.append(text.strip())
-        return "\n".join(texts).strip()
-
-    def _compose_memory_text(self, entities: list[str], relations: list[str]) -> str:
-        lines: list[str] = []
-        if entities:
-            lines.append("entities:")
-            lines.extend(entities)
-        if relations:
-            lines.append("relations:")
-            lines.extend(relations[: self.max_entities])
-        if not lines:
-            return "[]"
-        return "\n".join(lines)
+            docs = []
+        return docs
 
 
 @dataclass
@@ -865,184 +329,43 @@ class ResponderStep:
     llm: TextGeneratorPort
 
     def execute(self, state: RagWorkflowState) -> RagWorkflowState:
-        docs = state.get("retrieved_documents", [])
-        fs_entries = state.get("filesystem_entries", [])
-        logger.info(
-            "ResponderStep: generating final response using docs=%d filesystem_entries=%d.",
-            len(docs),
-            len(fs_entries),
-        )
-        docs_text = self._format_docs(docs)
-        filesystem_text = self._format_filesystem(
-            fs_entries,
-            path=state.get("filesystem_path", "."),
-            operation=state.get("filesystem_operation", ""),
-            filesystem_content=state.get("filesystem_content", ""),
-            filesystem_result=state.get("filesystem_result", ""),
-        )
-        memory_text = state.get("memory_context", "[]")
-        errors_text = self._format_tool_errors(state.get("tool_errors", []))
+        docs_text = _format_docs(state.get("retrieved_documents", []))
+        tool_results_text = _format_tool_results(state.get("tool_results", {}))
+        errors_text = "\n".join(f"- {e}" for e in (state.get("tool_errors") or [])) or "[]"
         prompt = self.prompt_store.render(
             "responder",
             conversation_context=state.get("conversation_context", ""),
             retrieved_documents=docs_text,
-            filesystem_context=filesystem_text,
-            memory_context=memory_text,
+            tool_results=tool_results_text,
             tool_errors=errors_text,
             user_input=state["user_input"],
         )
         response = self.llm.generate(prompt, temperature=0.2, max_new_tokens=320).strip()
-        logger.info("ResponderStep: response generated (length: %d chars).", len(response))
         return {"response": response}
 
-    @staticmethod
-    def _format_docs(documents: list[RetrievedDocument]) -> str:
-        if not documents:
-            return "[]"
-        lines = []
-        for item in documents:
-            lines.append(f"- source: {item.get('source', 'unknown')}\n  content: {item.get('content', '')}")
-        return "\n".join(lines)
 
-    @staticmethod
-    def _format_filesystem(
-        entries: list[FilesystemEntry],
-        path: str,
-        operation: str,
-        filesystem_content: str,
-        filesystem_result: str,
-    ) -> str:
-        lines = []
-        if operation:
-            lines.append(f"operation: {operation}")
-        lines.append(f"path: {path}")
-        if filesystem_result:
-            lines.append(f"result: {filesystem_result}")
-        if filesystem_content:
-            lines.append("content:")
-            lines.append(filesystem_content)
-        if not entries:
-            if len(lines) == 1 and lines[0] == f"path: {path}":
-                return "[]"
-            return "\n".join(lines)
-        for entry in entries:
-            entry_type = "dir" if entry.get("is_directory") else "file"
-            lines.append(f"- [{entry_type}] {entry.get('name', '')}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_tool_errors(errors: list[str]) -> str:
-        if not errors:
-            return "[]"
-        return "\n".join(f"- {error}" for error in errors)
-
+# ---------------------------------------------------------------------------
+# Concrete tool adapters (kept thin — just bridge to MCP callables)
+# ---------------------------------------------------------------------------
 
 class RetrievingTool:
     def __init__(self, retrieval_fn: Callable[[str], list[dict]]) -> None:
-        self._retrieval_fn = retrieval_fn
+        self._fn = retrieval_fn
 
     def retrieve(self, search_query: str) -> list[RetrievedDocument]:
-        rows = self._retrieval_fn(search_query) or []
-        docs: list[RetrievedDocument] = []
-        for row in rows:
-            metadata = row.get("metadata") or {}
-            docs.append(
-                {
-                    "content": str(row.get("content", "")),
-                    "source": str(metadata.get("filename") or metadata.get("document_id") or "unknown"),
-                }
-            )
-        return docs
+        rows = self._fn(search_query) or []
+        return [
+            {
+                "content": str(r.get("content", "")),
+                "source": str((r.get("metadata") or {}).get("filename") or (r.get("metadata") or {}).get("document_id") or "unknown"),
+            }
+            for r in rows
+        ]
 
 
-class FilesystemMcpTool:
-    def __init__(
-        self,
-        *,
-        list_directory_fn: Callable[[str], list[dict]],
-        read_file_fn: Callable[[str], str],
-        write_file_fn: Callable[[str, str], str],
-        delete_file_fn: Callable[[str], str],
-    ) -> None:
-        self._list_directory_fn = list_directory_fn
-        self._read_file_fn = read_file_fn
-        self._write_file_fn = write_file_fn
-        self._delete_file_fn = delete_file_fn
-
-    def list_directory(self, path: str = ".") -> list[FilesystemEntry]:
-        rows = self._list_directory_fn(path) or []
-        entries: list[FilesystemEntry] = []
-        for row in rows:
-            entries.append(
-                {
-                    "name": str(row.get("name", "")),
-                    "is_directory": bool(row.get("is_directory", False)),
-                }
-            )
-        return entries
-
-    def read_file(self, path: str) -> str:
-        return str(self._read_file_fn(path))
-
-    def write_file(self, path: str, content: str) -> str:
-        return str(self._write_file_fn(path, content))
-
-    def delete_file(self, path: str) -> str:
-        return str(self._delete_file_fn(path))
-
-
-class MemoryMcpTool:
-    def __init__(
-        self,
-        *,
-        search_nodes_fn: Callable[[str], dict],
-        open_nodes_fn: Callable[[list[str]], dict] | None = None,
-        add_observations_fn: Callable[[str, list[str]], dict],
-        create_entities_fn: Callable[[list[dict]], dict] | None = None,
-        create_relations_fn: Callable[[list[dict]], dict] | None = None,
-    ) -> None:
-        self._search_nodes_fn = search_nodes_fn
-        self._open_nodes_fn = open_nodes_fn
-        self._add_observations_fn = add_observations_fn
-        self._create_entities_fn = create_entities_fn
-        self._create_relations_fn = create_relations_fn
-
-    def search_nodes(self, query: str) -> dict:
-        payload = self._search_nodes_fn(query)
-        if isinstance(payload, dict):
-            return payload
-        return {}
-
-    def open_nodes(self, names: list[str]) -> dict:
-        if self._open_nodes_fn is None:
-            return {}
-        payload = self._open_nodes_fn(names)
-        if isinstance(payload, dict):
-            return payload
-        return {}
-
-    def add_observations(self, entity_name: str, contents: list[str]) -> dict:
-        payload = self._add_observations_fn(entity_name, contents)
-        if isinstance(payload, dict):
-            return payload
-        return {}
-
-    def create_entities(self, entities: list[dict]) -> dict:
-        if self._create_entities_fn is None:
-            return {}
-        payload = self._create_entities_fn(entities)
-        if isinstance(payload, dict):
-            return payload
-        return {}
-
-    def create_relations(self, relations: list[dict]) -> dict:
-        if self._create_relations_fn is None:
-            return {}
-        payload = self._create_relations_fn(relations)
-        if isinstance(payload, dict):
-            return payload
-        return {}
-
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
 
 class RagWorkflowOrchestrator:
     def __init__(
@@ -1051,105 +374,151 @@ class RagWorkflowOrchestrator:
         router: RouterStep,
         retriever: RetrieverStep,
         responder: ResponderStep,
-        filesystem: FilesystemStep | None = None,
-        memory: MemoryStep | None = None,
-        prefer_langgraph: bool = True,
+        available_tools_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        mcp_tool_executor: Callable[[str, dict[str, Any]], Any] | None = None,
         logger_instance: logging.Logger | None = None,
     ) -> None:
         self._router = router
         self._retriever = retriever
-        self._filesystem = filesystem
-        self._memory = memory
         self._responder = responder
+        self._available_tools_provider = available_tools_provider
+        self._mcp_tool_executor = mcp_tool_executor
         self._logger = logger_instance or logger
-        self._compiled_graph = self._build_graph() if prefer_langgraph else None
+        self._compiled_graph = self._build_graph()
 
     def run(self, *, user_input: str, conversation_context: str = "") -> RagWorkflowState:
-        self._logger.info(
-            "Starting RagWorkflow run for user input: '%s'",
-            user_input[:50] + "..." if len(user_input) > 50 else user_input,
-        )
-        initial_state: RagWorkflowState = {
+        available_tools = self._fetch_tools()
+        state: RagWorkflowState = {
             "user_input": user_input,
             "conversation_context": conversation_context,
+            "available_tools": available_tools,
             "retrieved_documents": [],
-            "filesystem_entries": [],
-            "memory_context": "[]",
+            "tool_results": {},
             "tool_errors": [],
         }
         if self._compiled_graph is not None:
             self._logger.info("Executing workflow using LangGraph.")
-            return self._compiled_graph.invoke(initial_state)
-        self._logger.info("Executing workflow using local fallback executor.")
-        return self._run_without_graph(initial_state)
+            return self._compiled_graph.invoke(state)
+        return self._run_linear(state)
 
     def route_only(self, *, user_input: str, conversation_context: str = "") -> bool:
-        self._logger.info("Starting route_only check.")
         state: RagWorkflowState = {
             "user_input": user_input,
             "conversation_context": conversation_context,
+            "available_tools": self._fetch_tools(),
         }
-        output = self._router.execute(state)
-        return "retrieval" in output.get("tools", [])
+        out = self._router.execute(state)
+        return any(c["name"] == "retrieval" for c in out.get("tool_calls", []))
 
-    def _run_without_graph(self, state: RagWorkflowState) -> RagWorkflowState:
-        router_state = self._router.execute(state)
-        state.update(router_state)
-        tool_state = self._execute_selected_tools(state)
-        state.update(tool_state)
-        response_state = self._responder.execute(state)
-        state.update(response_state)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_tool_args(tool_name: str, args: dict[str, Any], state: RagWorkflowState) -> dict[str, Any]:
+        """Ensure tool arguments are valid before dispatch. Fixes incomplete LLM-generated args."""
+        if tool_name == "memory.add_observations":
+            observations = args.get("observations")
+            if not isinstance(observations, list) or not observations:
+                user_input = state.get("user_input", "").strip()
+                return {
+                    "observations": [
+                        {"entityName": "session_memory", "contents": [user_input]}
+                    ]
+                }
+            # Validate each item has entityName (string) and contents (non-empty list of strings)
+            clean: list[dict[str, Any]] = []
+            for item in observations:
+                if not isinstance(item, dict):
+                    continue
+                entity = str(item.get("entityName") or item.get("entity_name") or "session_memory").strip()
+                contents = item.get("contents")
+                if not isinstance(contents, list) or not contents:
+                    contents = [state.get("user_input", "").strip()]
+                clean_contents = [str(c).strip() for c in contents if str(c).strip()]
+                if clean_contents:
+                    clean.append({"entityName": entity, "contents": clean_contents})
+            if not clean:
+                user_input = state.get("user_input", "").strip()
+                clean = [{"entityName": "session_memory", "contents": [user_input]}]
+            return {"observations": clean}
+        if tool_name == "memory.search_nodes":
+            query = str(args.get("query") or state.get("user_input") or "").strip()
+            return {"query": query}
+        if tool_name == "memory.open_nodes":
+            names = args.get("names")
+            if not isinstance(names, list) or not names:
+                return {"names": ["session_memory"]}
+            return {"names": [str(n).strip() for n in names if str(n).strip()]}
+        return args
+
+    def _fetch_tools(self) -> list[dict[str, Any]]:
+        if self._available_tools_provider is None:
+            return [dict(_RETRIEVAL_TOOL_MANIFEST)]
+        try:
+            tools = self._available_tools_provider() or []
+            return tools if tools else [dict(_RETRIEVAL_TOOL_MANIFEST)]
+        except Exception:
+            self._logger.exception("Failed to fetch MCP tool list. Using retrieval-only fallback.")
+            return [dict(_RETRIEVAL_TOOL_MANIFEST)]
+
+    def _run_linear(self, state: RagWorkflowState) -> RagWorkflowState:
+        state.update(self._router.execute(state))
+        state.update(self._execute_tools(state))
+        state.update(self._responder.execute(state))
         return state
 
-    def _execute_selected_tools(self, state: RagWorkflowState) -> RagWorkflowState:
-        tools = state.get("tools", []) or []
-        futures = {}
-        combined_state: RagWorkflowState = {}
+    def _execute_tools(self, state: RagWorkflowState) -> RagWorkflowState:
+        tool_calls: list[dict[str, Any]] = state.get("tool_calls") or []
+        retrieved_documents: list[RetrievedDocument] = []
+        tool_results: dict[str, Any] = {}
         errors: list[str] = []
 
-        with ThreadPoolExecutor(max_workers=max(1, len(tools) or 1)) as executor:
-            if "retrieval" in tools:
-                futures["retrieval"] = executor.submit(self._retriever.execute, state)
-            if "filesystem" in tools:
-                if self._filesystem is None:
-                    errors.append("filesystem tool requested but not configured.")
-                else:
-                    futures["filesystem"] = executor.submit(self._filesystem.execute, state)
-            if "memory" in tools:
-                if self._memory is None:
-                    errors.append("memory tool requested but not configured.")
-                else:
-                    futures["memory"] = executor.submit(self._memory.execute, state)
+        def run_call(call: dict[str, Any]) -> tuple[str, Any]:
+            name: str = call["name"]
+            args: dict[str, Any] = call.get("arguments") or {}
+            if name == "retrieval":
+                docs = self._retriever.execute(state, args)
+                return ("retrieval", docs)
+            if self._mcp_tool_executor is None:
+                raise RuntimeError(f"No MCP executor configured for tool '{name}'.")
+            args = self._normalize_tool_args(name, args, state)
+            return (name, self._mcp_tool_executor(name, args))
 
-            for task_name, future in futures.items():
+        with ThreadPoolExecutor(max_workers=max(1, len(tool_calls))) as pool:
+            futures = {pool.submit(run_call, call): call["name"] for call in tool_calls}
+            for future, name in futures.items():
                 try:
-                    task_state = future.result()
-                    combined_state.update(task_state)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("Tool execution failed: %s", task_name)
-                    errors.append(f"{task_name}: {exc}")
+                    result_name, result_value = future.result()
+                    if result_name == "retrieval":
+                        retrieved_documents.extend(result_value)
+                    else:
+                        tool_results[result_name] = result_value
+                except Exception as exc:
+                    self._logger.exception("Tool execution failed: %s", name)
+                    errors.append(f"{name}: {exc}")
 
+        out: RagWorkflowState = {}
+        if retrieved_documents:
+            out["retrieved_documents"] = retrieved_documents
+        if tool_results:
+            out["tool_results"] = tool_results
         if errors:
-            combined_state["tool_errors"] = errors
-        return combined_state
+            out["tool_errors"] = errors
+        return out
 
     def _build_graph(self):
         try:
             from langgraph.graph import StateGraph
-
-            self._logger.info("Successfully imported LangGraph. Building StateGraph.")
-        except Exception:  # noqa: BLE001
-            self._logger.warning("LangGraph is not available. Falling back to local workflow executor.")
+        except Exception:
+            self._logger.warning("LangGraph not available. Using linear executor.")
             return None
 
         graph = StateGraph(RagWorkflowState)
         graph.add_node("router", self._router.execute)
-        graph.add_node("tool_executor", self._execute_selected_tools)
+        graph.add_node("tool_executor", self._execute_tools)
         graph.add_node("responder", self._responder.execute)
-
         graph.set_entry_point("router")
         graph.add_edge("router", "tool_executor")
         graph.add_edge("tool_executor", "responder")
         graph.set_finish_point("responder")
-        self._logger.info("LangGraph workflow compiled successfully.")
+        self._logger.info("LangGraph workflow compiled.")
         return graph.compile()

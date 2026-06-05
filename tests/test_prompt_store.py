@@ -17,14 +17,10 @@ class PromptStoreTests(unittest.TestCase):
 
         router_prompt = store.get_prompt("router")
         retriever_prompt = store.get_prompt("retriever")
-        memory_graph_builder_prompt = store.get_prompt("memory_graph_builder")
-        memory_operation_planner_prompt = store.get_prompt("memory_operation_planner")
         responder_prompt = store.get_prompt("responder")
 
-        self.assertIn("You are a router for a tool-augmented Retrieval-Augmented Generation", router_prompt)
-        self.assertIn("You are a retrieval specialist for a RAG system.", retriever_prompt)
-        self.assertIn("You are an information extraction system for a memory knowledge graph.", memory_graph_builder_prompt)
-        self.assertIn("You are a memory agent operation planner.", memory_operation_planner_prompt)
+        self.assertIn("You are a tool router.", router_prompt)
+        self.assertIn("Transform the user's question into a search query", retriever_prompt)
         self.assertIn("You are a helpful AI assistant.", responder_prompt)
 
     def test_render_replaces_template_variables(self):
@@ -39,30 +35,6 @@ class PromptStoreTests(unittest.TestCase):
         self.assertIn("historico", rendered)
         self.assertIn("qual contrato?", rendered)
 
-    def test_render_memory_graph_builder_replaces_template_variables(self):
-        store = FilePromptStore(PROMPT_STORE_PATH)
-
-        rendered = store.render(
-            "memory_graph_builder",
-            conversation_context="ctx",
-            memory_content="Captain Elara leads Silver Hawks",
-        )
-
-        self.assertIn("ctx", rendered)
-        self.assertIn("Captain Elara leads Silver Hawks", rendered)
-
-    def test_render_memory_operation_planner_replaces_template_variables(self):
-        store = FilePromptStore(PROMPT_STORE_PATH)
-
-        rendered = store.render(
-            "memory_operation_planner",
-            conversation_context="ctx",
-            user_input="remember this fact",
-        )
-
-        self.assertIn("ctx", rendered)
-        self.assertIn("remember this fact", rendered)
-
     def test_render_keeps_literal_json_braces_in_router_prompt(self):
         store = FilePromptStore(PROMPT_STORE_PATH)
 
@@ -70,15 +42,15 @@ class PromptStoreTests(unittest.TestCase):
             "router",
             conversation_context="historico xyz",
             user_input="Onde esta no PDF?",
+            available_tools_manifest='[{"name":"retrieval"},{"name":"filesystem.read_file"}]',
         )
 
         self.assertIn(
-            '{"tools":["retrieval","filesystem","memory"],"tool_inputs":{"filesystem":{"operation":"list_directory","path":"."}}}',
+            '{"tool_calls":[{"name":"<tool_name>","arguments":{}}]}',
             rendered,
         )
-        self.assertIn('tool_inputs.filesystem.operation in {"list_directory","read_file","write_file","delete_file"}', rendered)
-        self.assertIn("Do not plan memory operation details here; a dedicated memory agent will decide memory operations.", rendered)
-        self.assertIn('{"tools":[]}', rendered)
+        self.assertIn('{"tool_calls":[]}', rendered)
+        self.assertIn('[{"name":"retrieval"},{"name":"filesystem.read_file"}]', rendered)
         self.assertIn("historico xyz", rendered)
         self.assertIn("Onde esta no PDF?", rendered)
 

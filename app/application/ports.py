@@ -27,6 +27,12 @@ class IngestionPort(Protocol):
     def uploaded_pdf_page_count(self, file_obj: UploadedFile) -> int:
         ...
 
+    def file_size_bytes(self, file_path: str) -> int:
+        ...
+
+    def pdf_page_count(self, file_path: str) -> int:
+        ...
+
     def ingest_file(
         self,
         file_path: str,
@@ -49,6 +55,9 @@ class IngestionPort(Protocol):
         ...
 
     def delete_document_by_id(self, document_id: int, upload_folder: str) -> dict[str, Any]:
+        ...
+
+    def delete_document_by_storage_path(self, storage_path: str, upload_folder: str) -> dict[str, Any]:
         ...
 
 

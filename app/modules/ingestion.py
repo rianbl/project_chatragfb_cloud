@@ -96,6 +96,16 @@ def uploaded_pdf_page_count(file_obj):
         stream.seek(current_pos)
 
 
+def file_size_bytes(file_path):
+    return int(os.path.getsize(file_path))
+
+
+def pdf_page_count(file_path):
+    with open(file_path, "rb") as pdf_stream:
+        reader = PdfReader(pdf_stream)
+        return len(reader.pages)
+
+
 def safe_remove_file(path, upload_folder=UPLOAD_FOLDER):
     if not path:
         return
@@ -165,14 +175,15 @@ def _build_chunks(units):
 
 def ingest_file(file_path, original_filename=None, size_bytes=0, page_count=None):
     create_schema()
+    normalized_path = os.path.normcase(os.path.abspath(file_path))
 
-    file_name = original_filename or os.path.basename(file_path)
+    file_name = original_filename or os.path.basename(normalized_path)
     extension = os.path.splitext(file_name)[1].lower()
     if extension not in SUPPORTED_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
         raise ValueError(f"Unsupported file extension: {extension}. Supported: {supported}")
 
-    units = extract_units(file_path, extension, registry=PARSER_REGISTRY)
+    units = extract_units(normalized_path, extension, registry=PARSER_REGISTRY)
     chunks = _build_chunks(units)
     if not chunks:
         raise ValueError("No readable content found in file.")
@@ -186,7 +197,7 @@ def ingest_file(file_path, original_filename=None, size_bytes=0, page_count=None
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
-                (file_name, extension.lstrip("."), file_path, int(size_bytes or 0), page_count),
+                (file_name, extension.lstrip("."), normalized_path, int(size_bytes or 0), page_count),
             )
             document_id = cursor.fetchone()[0]
 
@@ -292,7 +303,7 @@ def load_context_state(max_documents, max_file_size_bytes, max_total_size_bytes,
     }
 
 
-def delete_document_by_id(document_id, upload_folder=UPLOAD_FOLDER):
+def delete_document_by_id(document_id, upload_folder=UPLOAD_FOLDER, remove_file=True):
     create_schema()
 
     conn = get_db_connection()
@@ -320,5 +331,39 @@ def delete_document_by_id(document_id, upload_folder=UPLOAD_FOLDER):
     finally:
         conn.close()
 
-    safe_remove_file(deleted_file_path, upload_folder=upload_folder)
+    if remove_file:
+        safe_remove_file(deleted_file_path, upload_folder=upload_folder)
     return {"document_id": document_id, "filename": deleted_name, "storage_path": deleted_file_path}
+
+
+def delete_document_by_storage_path(storage_path, upload_folder=UPLOAD_FOLDER, remove_file=False):
+    create_schema()
+    normalized_path = os.path.normcase(os.path.abspath(storage_path))
+
+    conn = get_db_connection()
+    deleted_rows = []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, filename, storage_path
+                FROM documents
+                WHERE storage_path = %s;
+                """,
+                (normalized_path,),
+            )
+            deleted_rows = cursor.fetchall() or []
+            if deleted_rows:
+                cursor.execute("DELETE FROM documents WHERE storage_path = %s;", (normalized_path,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    if remove_file:
+        safe_remove_file(normalized_path, upload_folder=upload_folder)
+
+    return {
+        "storage_path": normalized_path,
+        "deleted_documents": [dict(row) for row in deleted_rows],
+        "deleted_count": len(deleted_rows),
+    }

@@ -4,6 +4,7 @@ import os
 from typing import TYPE_CHECKING
 
 from flask import jsonify, request, send_from_directory
+from modules.config import INTERNAL_API_TOKEN
 
 if TYPE_CHECKING:
     from bootstrap.container import ServiceContainer
@@ -120,6 +121,28 @@ def register_routes(app, container: "ServiceContainer", log_messages: list[str])
         except Exception as exc:  # noqa: BLE001
             app.logger.exception("MCP tool execution failed.")
             return jsonify({"error": str(exc)}), 502
+
+    @app.route("/internal/filesystem/events", methods=["POST"])
+    def internal_filesystem_events():
+        provided_token = request.headers.get("x-internal-token", "")
+        if INTERNAL_API_TOKEN and provided_token != INTERNAL_API_TOKEN:
+            return jsonify({"error": "Unauthorized internal call."}), 401
+
+        payload = request.json or {}
+        operation = payload.get("operation", "")
+        relative_path = payload.get("path", "")
+        if not isinstance(operation, str) or not isinstance(relative_path, str):
+            return jsonify({"error": "Fields 'operation' and 'path' must be strings."}), 400
+
+        try:
+            response_payload, status_code = container.context_service.sync_filesystem_event(
+                operation=operation,
+                relative_path=relative_path,
+            )
+            return jsonify(response_payload), status_code
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("Internal filesystem event sync failed.")
+            return jsonify({"error": str(exc)}), 500
 
     @app.route("/feedback", methods=["POST"])
     def feedback():

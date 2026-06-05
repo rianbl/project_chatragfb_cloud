@@ -43,9 +43,14 @@ export function createHttpApp(options: HttpTransportOptions): Express {
     const executionContext = buildExecutionContext(req);
     logger.info("HTTP tool execution requested.", { toolName, requestId: executionContext.requestId });
 
-    const result = await options.registry.execute(toolName, args, executionContext);
-    const statusCode = result.ok ? 200 : 422;
-    res.status(statusCode).json(result);
+    try {
+      const result = await options.registry.execute(toolName, args, executionContext);
+      const statusCode = result.ok ? 200 : 422;
+      res.status(statusCode).json(result);
+    } catch (err) {
+      logger.error("Tool execution error.", { toolName, error: String(err) });
+      res.status(500).json({ ok: false, error: String(err) });
+    }
   });
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

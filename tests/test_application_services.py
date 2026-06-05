@@ -28,6 +28,7 @@ class FakeIngestion:
             "is_upload_blocked": False,
             "blocked_reasons": [],
         }
+        self.deleted_storage_paths = []
 
     def create_schema(self):
         return None
@@ -42,6 +43,12 @@ class FakeIngestion:
         return 10
 
     def uploaded_pdf_page_count(self, file_obj):
+        return 1
+
+    def file_size_bytes(self, file_path):
+        return 10
+
+    def pdf_page_count(self, file_path):
         return 1
 
     def ingest_file(self, file_path, original_filename=None, size_bytes=0, page_count=None):
@@ -61,6 +68,10 @@ class FakeIngestion:
 
     def delete_document_by_id(self, document_id, upload_folder):
         return {"filename": "a.txt"}
+
+    def delete_document_by_storage_path(self, storage_path, upload_folder):
+        self.deleted_storage_paths.append(storage_path)
+        return {"deleted_count": 1}
 
 
 class FakeRetrieval:
@@ -238,6 +249,17 @@ class ApplicationServicesPhase1Tests(unittest.TestCase):
         startup.run()
 
         self.assertEqual(calls, ["db", "schema", "embeddings", "chat", "state"])
+
+    def test_sync_filesystem_delete_event_removes_rows_and_refreshes_index(self):
+        ingestion = FakeIngestion()
+        retrieval = FakeRetrieval()
+        service = ContextService(ingestion=ingestion, retrieval=retrieval, limits=self.limits, logger=self.logger)
+
+        payload, status = service.sync_filesystem_event("delete", "doc.txt")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["operation"], "delete")
+        self.assertTrue(ingestion.deleted_storage_paths)
 
 
 if __name__ == "__main__":

@@ -3,10 +3,12 @@ import fs from "fs/promises";
 import path from "path";
 import { JsonObject, JsonValue, ToolExecutionResult } from "../../core/types";
 import { resolveFilesystemRoot } from "../../utils/fsRoot";
+import { logger } from "../../utils/logger";
 import { FilesystemMcpBridge } from "./backend";
 import { buildDeleteFileTool } from "./deleteFile";
 import { buildListDirectoryTool } from "./listDirectory";
 import { buildReadFileTool } from "./readFile";
+import { emitFilesystemSyncEvent } from "./syncEvents";
 import { FilesystemToolProxy } from "./types";
 import { buildWriteFileTool } from "./writeFile";
 
@@ -106,12 +108,35 @@ export function registerFilesystemTools(registry: ToolRegistry, bridge: Filesyst
     return maybeError === true;
   }
 
-  const proxy: FilesystemToolProxy = async ({ upstreamToolName, args }): Promise<ToolExecutionResult> => {
+  async function dispatchSyncEvent(upstreamToolName: string, args: JsonObject, requestId: string): Promise<void> {
+    const relativePath = typeof args.path === "string" ? args.path : "";
+    if (!relativePath) {
+      return;
+    }
+    if (upstreamToolName === "write_file") {
+      await emitFilesystemSyncEvent("upsert", relativePath, requestId);
+      return;
+    }
+    if (upstreamToolName === "delete_file") {
+      await emitFilesystemSyncEvent("delete", relativePath, requestId);
+    }
+  }
+
+  const proxy: FilesystemToolProxy = async ({ upstreamToolName, args, context }): Promise<ToolExecutionResult> => {
     try {
       const bridgeArgs = buildBridgeArgs(upstreamToolName, args);
       const data = await bridge.callTool(upstreamToolName, bridgeArgs);
       if (bridgeReturnedError(data)) {
         throw new Error("Filesystem MCP bridge returned tool-level error.");
+      }
+      try {
+        await dispatchSyncEvent(upstreamToolName, args, context.requestId);
+      } catch (syncError) {
+        logger.warn("Filesystem sync event dispatch failed after bridge success.", {
+          upstreamToolName,
+          requestId: context.requestId,
+          error: String(syncError),
+        });
       }
       return {
         ok: true,
@@ -120,6 +145,15 @@ export function registerFilesystemTools(registry: ToolRegistry, bridge: Filesyst
     } catch (error) {
       try {
         const fallbackData = await fallbackCall(upstreamToolName, args);
+        try {
+          await dispatchSyncEvent(upstreamToolName, args, context.requestId);
+        } catch (syncError) {
+          logger.warn("Filesystem sync event dispatch failed after fallback success.", {
+            upstreamToolName,
+            requestId: context.requestId,
+            error: String(syncError),
+          });
+        }
         return {
           ok: true,
           data: fallbackData,
