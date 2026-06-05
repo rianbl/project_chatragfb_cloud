@@ -305,10 +305,11 @@ body {
 }
 
 .memory-panel {
-    width: 24%;
+    width: var(--memory-panel-width, 320px);
     min-width: 240px;
-    max-width: 320px;
-    flex: 0 0 24%;
+    max-width: 640px;
+    flex: 0 0 var(--memory-panel-width, 320px);
+    position: relative;
     border: 1px solid #ddd;
     border-radius: 8px;
     background-color: #ffffff;
@@ -403,6 +404,42 @@ body {
     font-size: 12px;
     color: #6c757d;
     line-height: 1.4;
+}
+
+.memory-resize-handle {
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    left: -8px;
+    width: 12px;
+    cursor: col-resize;
+    touch-action: none;
+    border-radius: 999px;
+}
+
+.memory-resize-handle::before {
+    content: '';
+    display: block;
+    width: 3px;
+    height: 36px;
+    margin: calc(50% - 18px) auto 0;
+    border-radius: 999px;
+    background: #d3deeb;
+    transition: background-color 0.2s ease;
+}
+
+.memory-resize-handle:hover::before,
+.memory-panel.is-resizing .memory-resize-handle::before {
+    background: #2c7be5;
+}
+
+.memory-panel.is-collapsed .memory-resize-handle {
+    display: none;
+}
+
+body.memory-panel-resizing {
+    cursor: col-resize;
+    user-select: none;
 }
 
 .memory-panel.is-collapsed {
@@ -531,6 +568,10 @@ body {
     }
 
     .memory-panel.is-collapsed .memory-collapsed-rail {
+        display: none;
+    }
+
+    .memory-resize-handle {
         display: none;
     }
 

@@ -21,6 +21,10 @@ let memoryGraphState = {
     edges: [],
     meta: { entity_count: 0, relation_count: 0, updated_at: '' }
 };
+let memoryNetwork = null;
+const MEMORY_PANEL_WIDTH_STORAGE_KEY = 'memoryPanelWidthPx';
+const MEMORY_PANEL_MIN_WIDTH = 240;
+const MEMORY_PANEL_MAX_WIDTH = 640;
 
 function pushConversationEntry(role, content) {
     const normalizedRole = role === 'user' ? 'user' : 'assistant';
@@ -84,11 +88,107 @@ function setMemoryPanelCollapsed(isCollapsed) {
         if (!window.EventSource) {
             loadMemoryGraph({ silent: true }).catch((error) => console.error(error));
         }
+        requestAnimationFrame(() => {
+            if (memoryNetwork) {
+                memoryNetwork.redraw();
+                memoryNetwork.fit({ animation: { duration: 180, easingFunction: 'easeInOutQuad' } });
+            }
+        });
     }
 }
 
 function toggleMemoryPanel() {
     setMemoryPanelCollapsed(!memoryPanelCollapsed);
+}
+
+function clampMemoryPanelWidth(width) {
+    const numericWidth = Number(width);
+    if (!Number.isFinite(numericWidth)) {
+        return 320;
+    }
+    return Math.max(MEMORY_PANEL_MIN_WIDTH, Math.min(MEMORY_PANEL_MAX_WIDTH, Math.round(numericWidth)));
+}
+
+function applyMemoryPanelWidth(width, persist = false) {
+    const memoryPanel = document.getElementById('memoryPanel');
+    if (!memoryPanel || window.innerWidth <= 900) {
+        return;
+    }
+    const clampedWidth = clampMemoryPanelWidth(width);
+    memoryPanel.style.setProperty('--memory-panel-width', `${clampedWidth}px`);
+    if (persist) {
+        try {
+            localStorage.setItem(MEMORY_PANEL_WIDTH_STORAGE_KEY, String(clampedWidth));
+        } catch {
+            // Non-blocking: ignore storage errors.
+        }
+    }
+    if (memoryNetwork) {
+        memoryNetwork.redraw();
+    }
+}
+
+function restoreMemoryPanelWidth() {
+    let savedWidth = 320;
+    try {
+        const fromStorage = localStorage.getItem(MEMORY_PANEL_WIDTH_STORAGE_KEY);
+        if (fromStorage) {
+            savedWidth = Number(fromStorage);
+        }
+    } catch {
+        // Non-blocking: ignore storage errors.
+    }
+    applyMemoryPanelWidth(savedWidth, false);
+}
+
+function initializeMemoryPanelResize() {
+    const memoryPanel = document.getElementById('memoryPanel');
+    const resizeHandle = document.getElementById('memoryResizeHandle');
+    if (!memoryPanel || !resizeHandle) {
+        return;
+    }
+
+    let isDragging = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    const onPointerMove = (event) => {
+        if (!isDragging) {
+            return;
+        }
+        const deltaX = startX - event.clientX;
+        const nextWidth = startWidth + deltaX;
+        applyMemoryPanelWidth(nextWidth, false);
+    };
+
+    const stopDrag = () => {
+        if (!isDragging) {
+            return;
+        }
+        isDragging = false;
+        memoryPanel.classList.remove('is-resizing');
+        document.body.classList.remove('memory-panel-resizing');
+        const appliedWidth = parseFloat(getComputedStyle(memoryPanel).width);
+        applyMemoryPanelWidth(appliedWidth, true);
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', stopDrag);
+        window.removeEventListener('pointercancel', stopDrag);
+    };
+
+    resizeHandle.addEventListener('pointerdown', (event) => {
+        if (window.innerWidth <= 900 || memoryPanelCollapsed) {
+            return;
+        }
+        isDragging = true;
+        startX = event.clientX;
+        startWidth = memoryPanel.getBoundingClientRect().width;
+        memoryPanel.classList.add('is-resizing');
+        document.body.classList.add('memory-panel-resizing');
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', stopDrag);
+        window.addEventListener('pointercancel', stopDrag);
+        event.preventDefault();
+    });
 }
 
 function getContextStatusIcon(documentCount) {
@@ -407,15 +507,58 @@ function colorForNodeType(type) {
     return palette[Math.abs(hash) % palette.length];
 }
 
+function destroyMemoryNetwork() {
+    if (memoryNetwork) {
+        memoryNetwork.destroy();
+        memoryNetwork = null;
+    }
+}
+
+function toMemoryNetworkNodes(nodes) {
+    return nodes.map((node) => {
+        const nodeColor = colorForNodeType(node.type);
+        return {
+            id: node.id,
+            label: node.label,
+            title: `${node.label}\nType: ${node.type}\nObservations: ${node.observation_count}`,
+            shape: 'dot',
+            color: {
+                background: nodeColor,
+                border: '#ffffff',
+                highlight: { background: nodeColor, border: '#1f2a37' }
+            },
+            value: 18 + Math.min(14, Math.max(0, Number(node.observation_count || 0))),
+            font: {
+                color: '#1f2a37',
+                size: 12,
+                face: 'Arial'
+            }
+        };
+    });
+}
+
+function toMemoryNetworkEdges(edges) {
+    return edges.map((edge, index) => ({
+        id: edge.id || `${edge.source}-${edge.target}-${edge.label}-${index}`,
+        from: edge.source,
+        to: edge.target,
+        label: edge.label,
+        arrows: 'to',
+        color: { color: '#98a6b3', highlight: '#2c7be5' },
+        font: { size: 10, align: 'middle', color: '#495057' },
+        smooth: { type: 'dynamic', roundness: 0.2 }
+    }));
+}
+
 function renderMemoryGraphSvg(nodes, edges) {
     const canvas = document.getElementById('memoryGraphCanvas');
     if (!canvas) {
         return;
     }
 
-    canvas.innerHTML = '';
-
     if (!nodes.length) {
+        destroyMemoryNetwork();
+        canvas.innerHTML = '';
         const empty = document.createElement('div');
         empty.className = 'memory-graph-empty';
         empty.textContent = memoryUiStatus === 'loading'
@@ -425,98 +568,61 @@ function renderMemoryGraphSvg(nodes, edges) {
         return;
     }
 
-    const width = Math.max(canvas.clientWidth, 220);
-    const height = Math.max(canvas.clientHeight, 320);
-    const ns = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '100%');
+    if (!window.vis || !window.vis.Network) {
+        destroyMemoryNetwork();
+        canvas.innerHTML = '';
+        const fallback = document.createElement('div');
+        fallback.className = 'memory-graph-empty';
+        fallback.textContent = 'Interactive graph library unavailable. Please reload the page.';
+        canvas.appendChild(fallback);
+        return;
+    }
 
-    const defs = document.createElementNS(ns, 'defs');
-    const marker = document.createElementNS(ns, 'marker');
-    marker.setAttribute('id', 'memoryArrow');
-    marker.setAttribute('markerWidth', '10');
-    marker.setAttribute('markerHeight', '10');
-    marker.setAttribute('refX', '8');
-    marker.setAttribute('refY', '3');
-    marker.setAttribute('orient', 'auto');
-    const arrowPath = document.createElementNS(ns, 'path');
-    arrowPath.setAttribute('d', 'M0,0 L0,6 L9,3 z');
-    arrowPath.setAttribute('fill', '#6c757d');
-    marker.appendChild(arrowPath);
-    defs.appendChild(marker);
-    svg.appendChild(defs);
-
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const radius = Math.max(70, Math.min(width, height) / 2 - 46);
-    const positions = new Map();
-
-    nodes.forEach((node, index) => {
-        const angle = (Math.PI * 2 * index) / nodes.length;
-        const x = nodes.length === 1 ? centerX : centerX + radius * Math.cos(angle);
-        const y = nodes.length === 1 ? centerY : centerY + radius * Math.sin(angle);
-        positions.set(node.id, { x, y, node });
-    });
-
-    edges.forEach((edge) => {
-        const source = positions.get(edge.source);
-        const target = positions.get(edge.target);
-        if (!source || !target) {
-            return;
+    const graphData = {
+        nodes: new window.vis.DataSet(toMemoryNetworkNodes(nodes)),
+        edges: new window.vis.DataSet(toMemoryNetworkEdges(edges))
+    };
+    const graphOptions = {
+        autoResize: true,
+        interaction: {
+            dragNodes: true,
+            dragView: true,
+            zoomView: true,
+            hover: true,
+            multiselect: true,
+            navigationButtons: true,
+            keyboard: { enabled: true, bindToWindow: false }
+        },
+        layout: {
+            improvedLayout: true,
+            randomSeed: 17
+        },
+        physics: {
+            enabled: true,
+            stabilization: { enabled: true, iterations: 180, fit: true },
+            barnesHut: {
+                gravitationalConstant: -6500,
+                springLength: 140,
+                springConstant: 0.04,
+                damping: 0.24
+            }
+        },
+        nodes: {
+            borderWidth: 2,
+            scaling: { min: 14, max: 36 }
+        },
+        edges: {
+            width: 1.8
         }
+    };
 
-        const line = document.createElementNS(ns, 'line');
-        line.setAttribute('x1', String(source.x));
-        line.setAttribute('y1', String(source.y));
-        line.setAttribute('x2', String(target.x));
-        line.setAttribute('y2', String(target.y));
-        line.setAttribute('stroke', '#98a6b3');
-        line.setAttribute('stroke-width', '1.8');
-        line.setAttribute('marker-end', 'url(#memoryArrow)');
-        svg.appendChild(line);
-
-        const label = document.createElementNS(ns, 'text');
-        label.setAttribute('x', String((source.x + target.x) / 2));
-        label.setAttribute('y', String((source.y + target.y) / 2 - 4));
-        label.setAttribute('text-anchor', 'middle');
-        label.setAttribute('font-size', '10');
-        label.setAttribute('fill', '#495057');
-        label.textContent = edge.label;
-        svg.appendChild(label);
-    });
-
-    nodes.forEach((node) => {
-        const position = positions.get(node.id);
-        if (!position) {
-            return;
-        }
-        const group = document.createElementNS(ns, 'g');
-
-        const circle = document.createElementNS(ns, 'circle');
-        circle.setAttribute('cx', String(position.x));
-        circle.setAttribute('cy', String(position.y));
-        circle.setAttribute('r', '20');
-        circle.setAttribute('fill', colorForNodeType(node.type));
-        circle.setAttribute('fill-opacity', '0.9');
-        circle.setAttribute('stroke', '#ffffff');
-        circle.setAttribute('stroke-width', '2');
-        group.appendChild(circle);
-
-        const text = document.createElementNS(ns, 'text');
-        text.setAttribute('x', String(position.x));
-        text.setAttribute('y', String(position.y + 35));
-        text.setAttribute('text-anchor', 'middle');
-        text.setAttribute('font-size', '11');
-        text.setAttribute('fill', '#212529');
-        text.textContent = node.label.length > 18 ? `${node.label.slice(0, 18)}...` : node.label;
-        group.appendChild(text);
-
-        svg.appendChild(group);
-    });
-
-    canvas.appendChild(svg);
+    if (!memoryNetwork) {
+        canvas.innerHTML = '';
+        memoryNetwork = new window.vis.Network(canvas, graphData, graphOptions);
+    } else {
+        memoryNetwork.setData(graphData);
+        memoryNetwork.setOptions(graphOptions);
+    }
 }
 
 function renderMemoryLegend(nodes, edges, meta) {
@@ -792,12 +898,17 @@ document.getElementById('userInput').addEventListener('keypress', function(event
     }
 
     window.addEventListener('resize', () => {
-        renderMemoryGraphState();
+        if (window.innerWidth > 900 && memoryNetwork) {
+            memoryNetwork.redraw();
+        }
     });
     window.addEventListener('beforeunload', () => {
         stopMemoryGraphStream();
+        destroyMemoryNetwork();
     });
 
+    restoreMemoryPanelWidth();
+    initializeMemoryPanelResize();
     setContextPanelCollapsed(true);
     setMemoryPanelCollapsed(true);
     renderMemoryGraphState();
