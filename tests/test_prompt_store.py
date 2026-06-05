@@ -19,7 +19,7 @@ class PromptStoreTests(unittest.TestCase):
         retriever_prompt = store.get_prompt("retriever")
         responder_prompt = store.get_prompt("responder")
 
-        self.assertIn("You are a router for a Retrieval-Augmented Generation", router_prompt)
+        self.assertIn("You are a router for a tool-augmented Retrieval-Augmented Generation", router_prompt)
         self.assertIn("You are a retrieval specialist for a RAG system.", retriever_prompt)
         self.assertIn("You are a helpful AI assistant.", responder_prompt)
 
@@ -44,8 +44,12 @@ class PromptStoreTests(unittest.TestCase):
             user_input="Onde esta no PDF?",
         )
 
-        self.assertIn('{"use_retrieval": true}', rendered)
-        self.assertIn('{"use_retrieval": false}', rendered)
+        self.assertIn(
+            '{"tools":["retrieval","filesystem"],"tool_inputs":{"filesystem":{"operation":"list_directory","path":"."}}}',
+            rendered,
+        )
+        self.assertIn('tool_inputs.filesystem.operation in {"list_directory","read_file","write_file","delete_file"}', rendered)
+        self.assertIn('{"tools":[]}', rendered)
         self.assertIn("historico xyz", rendered)
         self.assertIn("Onde esta no PDF?", rendered)
 

@@ -10,6 +10,24 @@ let contextState = {
 };
 let contextPanelCollapsed = false;
 let contextUiStatus = 'idle';
+const MAX_CONVERSATION_CONTEXT_MESSAGES = 12;
+let conversationHistory = [];
+
+function pushConversationEntry(role, content) {
+    const normalizedRole = role === 'user' ? 'user' : 'assistant';
+    const normalizedContent = String(content || '').trim();
+    if (!normalizedContent) {
+        return;
+    }
+    conversationHistory.push({ role: normalizedRole, content: normalizedContent });
+    if (conversationHistory.length > MAX_CONVERSATION_CONTEXT_MESSAGES) {
+        conversationHistory = conversationHistory.slice(-MAX_CONVERSATION_CONTEXT_MESSAGES);
+    }
+}
+
+function buildConversationContextPayload() {
+    return conversationHistory.map((item) => `${item.role}: ${item.content}`);
+}
 
 function setLoadingOverlayVisible(isVisible) {
     const loadingOverlay = document.getElementById('loadingOverlay');
@@ -136,6 +154,7 @@ function appendMessage(sender, text) {
 
     chatDisplay.appendChild(messageDiv);
     chatDisplay.scrollTop = chatDisplay.scrollHeight;
+    pushConversationEntry(sender, text);
 }
 
 async function sendMessage() {
@@ -153,12 +172,20 @@ async function sendMessage() {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ query }),
+            body: JSON.stringify({
+                query,
+                conversation_context: buildConversationContextPayload(),
+            }),
         });
 
         if (response.ok) {
             const data = await response.json();
             appendMessage('model', data.response || 'Erro: Resposta inválida.');
+            try {
+                await loadContextState();
+            } catch (refreshError) {
+                console.error('Failed to refresh context state after chat.', refreshError);
+            }
         } else {
             const errorBody = await response.json().catch(() => ({}));
             const errorMessage = errorBody.error || `Erro da API (status ${response.status}).`;

@@ -4,6 +4,7 @@ import path from "path";
 import { JsonObject, JsonValue, ToolExecutionResult } from "../../core/types";
 import { resolveFilesystemRoot } from "../../utils/fsRoot";
 import { FilesystemMcpBridge } from "./backend";
+import { buildDeleteFileTool } from "./deleteFile";
 import { buildListDirectoryTool } from "./listDirectory";
 import { buildReadFileTool } from "./readFile";
 import { FilesystemToolProxy } from "./types";
@@ -64,11 +65,30 @@ export function registerFilesystemTools(registry: ToolRegistry, bridge: Filesyst
       };
     }
 
+    if (upstreamToolName === "delete_file") {
+      const relPath = String(args.path || ".");
+      const absPath = safeJoinRoot(relPath);
+      await fs.unlink(absPath);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `File deleted: ${relPath}`,
+          },
+        ],
+      };
+    }
+
     throw new Error(`Unknown filesystem tool '${upstreamToolName}'.`);
   }
 
   function buildBridgeArgs(upstreamToolName: string, args: JsonObject): JsonObject {
-    if (upstreamToolName === "read_file" || upstreamToolName === "write_file" || upstreamToolName === "list_directory") {
+    if (
+      upstreamToolName === "read_file" ||
+      upstreamToolName === "write_file" ||
+      upstreamToolName === "list_directory" ||
+      upstreamToolName === "delete_file"
+    ) {
       const relPath = String(args.path || ".");
       return {
         ...args,
@@ -116,4 +136,5 @@ export function registerFilesystemTools(registry: ToolRegistry, bridge: Filesyst
   registry.register(buildReadFileTool(proxy));
   registry.register(buildWriteFileTool(proxy));
   registry.register(buildListDirectoryTool(proxy));
+  registry.register(buildDeleteFileTool(proxy));
 }
