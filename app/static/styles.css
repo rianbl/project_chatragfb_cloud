@@ -44,13 +44,35 @@ body {
 }
 
 .site-header a {
-    font-size: 14px;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: #1a73e8;
     text-decoration: none;
 }
 
+.site-header-links {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.site-header a svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
 .site-header a:hover {
-    text-decoration: underline;
+    color: #1558b0;
+}
+
+.site-header a:focus-visible {
+    outline: 2px solid #2c7be5;
+    outline-offset: 2px;
+    border-radius: 6px;
 }
 
 /* Wrapper for chat and upload containers */
