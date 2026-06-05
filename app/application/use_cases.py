@@ -67,11 +67,12 @@ class ContextService:
             return {"ok": False, "status_code": 500, "message": str(exc)}
 
     def handle_upload(self, file: UploadedFile) -> tuple[dict[str, Any], int]:
-        if not getattr(file, "filename", None):
+        filename = file.filename
+        if not filename:
             return {"error": "No file selected"}, 400
 
-        self._logger.info("Incoming filename='%s'.", file.filename)
-        if not self._ingestion.is_supported_file(file.filename):
+        self._logger.info("Incoming filename='%s'.", filename)
+        if not self._ingestion.is_supported_file(filename):
             return {"error": "Unsupported file format. Supported: .csv, .pdf, .txt"}, 400
 
         file_size_bytes = self._ingestion.uploaded_file_size_bytes(file)
@@ -90,7 +91,7 @@ class ContextService:
                 400,
             )
 
-        extension = os.path.splitext(file.filename)[1].lower()
+        extension = os.path.splitext(filename)[1].lower()
         page_count = None
         if extension == ".pdf":
             try:
@@ -149,7 +150,7 @@ class ContextService:
             )
 
         filepath = self._ingestion.build_file_path(
-            file.filename, upload_folder=self._limits.upload_folder
+            filename, upload_folder=self._limits.upload_folder
         )
         filename = os.path.basename(filepath)
         self._logger.info("Saving upload to '%s'.", filepath)

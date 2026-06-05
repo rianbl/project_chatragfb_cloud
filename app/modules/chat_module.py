@@ -4,6 +4,7 @@ import inspect
 import logging
 import socket
 import time
+from typing import Any
 
 import requests
 from huggingface_hub import InferenceClient
@@ -34,12 +35,12 @@ RAG_ORCHESTRATOR: RagWorkflowOrchestrator | None = None
 logger = logging.getLogger(__name__)
 
 
-def _build_hf_client(provider: str):
+def _build_hf_client(provider: str) -> InferenceClient:
     if not HF_API_TOKEN:
         raise ValueError("Missing required environment variable: HF_API_TOKEN")
 
     init_params = inspect.signature(InferenceClient.__init__).parameters
-    kwargs = {"timeout": HF_TIMEOUT}
+    kwargs: dict[str, Any] = {"timeout": HF_TIMEOUT}
 
     if "api_key" in init_params:
         kwargs["api_key"] = HF_API_TOKEN
@@ -69,7 +70,7 @@ def _build_hf_client(provider: str):
     return client
 
 
-def _get_hf_client(provider: str | None = None, force_recreate: bool = False):
+def _get_hf_client(provider: str | None = None, force_recreate: bool = False) -> InferenceClient:
     resolved_provider = (provider or HF_PROVIDER or "auto").strip()
     cache_key = resolved_provider.lower()
     if force_recreate or cache_key not in HF_CLIENTS:
@@ -217,7 +218,7 @@ def _get_rag_orchestrator() -> RagWorkflowOrchestrator:
     return RAG_ORCHESTRATOR
 
 
-def _resolve_host(hostname: str):
+def _resolve_host(hostname: str) -> dict[str, Any]:
     try:
         resolved = socket.getaddrinfo(hostname, 443)
         return {"ok": True, "addresses": sorted({item[4][0] for item in resolved})}
@@ -225,7 +226,7 @@ def _resolve_host(hostname: str):
         return {"ok": False, "error": str(exc), "addresses": []}
 
 
-def get_chat_status():
+def get_chat_status() -> dict[str, Any]:
     status = {
         "token_present": bool(HF_API_TOKEN),
         "provider": HF_PROVIDER,
@@ -240,7 +241,7 @@ def get_chat_status():
     return status
 
 
-def startup_check_chat_client():
+def startup_check_chat_client() -> None:
     if not HF_API_TOKEN:
         logger.error("HF_API_TOKEN is missing. Chat requests will fail.")
         return
@@ -264,12 +265,12 @@ def startup_check_chat_client():
     )
 
 
-def identify_intent(query: str):
+def identify_intent(query: str) -> str:
     use_retrieval = _get_rag_orchestrator().route_only(user_input=query, conversation_context="")
     return "requires_retrieval" if use_retrieval else "direct_response"
 
 
-def query_hf_api(payload, retries=2, delay=3):
+def query_hf_api(payload: dict[str, Any], retries: int = 2, delay: int = 3) -> list[dict[str, str]]:
     del retries
     del delay
     prompt = payload.get("inputs", "")
@@ -281,7 +282,7 @@ def query_hf_api(payload, retries=2, delay=3):
     return [{"generated_text": f"{prompt}{generated_text}"}]
 
 
-def process_chat_query(user_query: str, conversation_context: str = ""):
+def process_chat_query(user_query: str, conversation_context: str = "") -> dict[str, str]:
     workflow_state = _get_rag_orchestrator().run(
         user_input=user_query,
         conversation_context=conversation_context or "",

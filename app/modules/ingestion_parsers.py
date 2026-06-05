@@ -31,7 +31,7 @@ def _normalize_text(text: str) -> str:
 
 class CsvParser:
     def extract_units(self, file_path: str) -> list[dict]:
-        units = []
+        units: list[dict[str, object]] = []
         with open(file_path, encoding="utf-8", errors="replace", newline="") as source:
             reader = csv.reader(source)
             rows = [row for row in reader if any(cell.strip() for cell in row)]
@@ -86,7 +86,7 @@ class PdfParser:
         from pypdf import PdfReader
 
         reader = PdfReader(file_path)
-        units = []
+        units: list[dict[str, object]] = []
         for page_number, page in enumerate(reader.pages, start=1):
             page_text = _normalize_text(page.extract_text() or "")
             if not page_text:
