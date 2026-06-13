@@ -3,6 +3,7 @@ import path from "path";
 
 import { JsonObject, JsonValue, ToolExecutionResult } from "../../core/types";
 import { ToolRegistry } from "../../core/toolRegistry";
+import { logger } from "../../utils/logger";
 import { MemoryMcpBridge } from "./backend";
 import { buildAddObservationsTool } from "./addObservations";
 import { buildCreateEntitiesTool } from "./createEntities";
@@ -178,6 +179,8 @@ function openNodes(graph: MemoryGraph, names: string[]): MemoryGraph {
 }
 
 export function registerMemoryTools(registry: ToolRegistry, bridge: MemoryMcpBridge, memoryFilePath: string): void {
+  const mutatingTools = new Set(["create_entities", "create_relations", "add_observations"]);
+
   async function fallbackCall(upstreamToolName: string, args: JsonObject): Promise<JsonValue> {
     const graph = await readGraphFromFile(memoryFilePath);
 
@@ -302,6 +305,16 @@ export function registerMemoryTools(registry: ToolRegistry, bridge: MemoryMcpBri
       const data = await bridge.callTool(upstreamToolName, args);
       if (bridgeReturnedError(data)) {
         throw new Error("Memory MCP bridge returned tool-level error.");
+      }
+      if (mutatingTools.has(upstreamToolName)) {
+        try {
+          await fallbackCall(upstreamToolName, args);
+        } catch (syncError) {
+          logger.warn("Memory local sync failed after successful bridge call.", {
+            upstreamToolName,
+            error: String(syncError),
+          });
+        }
       }
       return {
         ok: true,

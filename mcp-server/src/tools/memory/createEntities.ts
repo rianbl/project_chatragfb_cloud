@@ -30,7 +30,8 @@ function sanitizeEntities(rawEntities: unknown): Array<{ name: string; entityTyp
 export function buildCreateEntitiesTool(proxy: MemoryToolProxy): ToolDefinition {
   return {
     name: "memory.create_entities",
-    description: "Create one or more entities in memory graph.",
+    description:
+      "Create structured entities in memory graph (name/entityType/observations). Use for explicit graph construction.",
     inputSchema: {
       type: "object",
       properties: {

@@ -17,7 +17,8 @@ function sanitizeNames(rawNames: unknown): string[] {
 export function buildOpenNodesTool(proxy: MemoryToolProxy): ToolDefinition {
   return {
     name: "memory.open_nodes",
-    description: "Open memory graph nodes by exact names.",
+    description:
+      "Get details for specific remembered entities by exact name. Use when the entity names are known.",
     inputSchema: {
       type: "object",
       properties: {

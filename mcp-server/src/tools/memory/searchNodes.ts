@@ -4,7 +4,8 @@ import { MemoryToolProxy } from "./types";
 export function buildSearchNodesTool(proxy: MemoryToolProxy): ToolDefinition {
   return {
     name: "memory.search_nodes",
-    description: "Search memory graph nodes by query string.",
+    description:
+      "Search remembered facts by keyword across entity name/type/observations. Use for memory lookup questions.",
     inputSchema: {
       type: "object",
       properties: {

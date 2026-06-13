@@ -28,7 +28,8 @@ function sanitizeRelations(rawRelations: unknown): Array<{ from: string; to: str
 export function buildCreateRelationsTool(proxy: MemoryToolProxy): ToolDefinition {
   return {
     name: "memory.create_relations",
-    description: "Create one or more relations in memory graph.",
+    description:
+      "Create relations between remembered entities (from/to/relationType). Use when a relationship is explicitly stated.",
     inputSchema: {
       type: "object",
       properties: {

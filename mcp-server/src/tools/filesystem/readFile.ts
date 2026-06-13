@@ -5,7 +5,8 @@ import { FilesystemToolProxy } from "./types";
 export function buildReadFileTool(proxy: FilesystemToolProxy): ToolDefinition {
   return {
     name: "filesystem.read_file",
-    description: "Read a UTF-8 text file from the configured filesystem root.",
+    description:
+      "Read exact UTF-8 file content by path. Use for precise inspection/debugging or literal file output.",
     inputSchema: {
       type: "object",
       properties: {

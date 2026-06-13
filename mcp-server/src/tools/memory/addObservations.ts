@@ -32,7 +32,8 @@ function sanitizeObservations(rawObservations: unknown): Array<{ entityName: str
 export function buildAddObservationsTool(proxy: MemoryToolProxy): ToolDefinition {
   return {
     name: "memory.add_observations",
-    description: "Add observations to existing entities in memory graph.",
+    description:
+      "Store new facts in memory. Use when the user asks to remember/save/store information. Input: observations[{entityName, contents[]}]",
     inputSchema: {
       type: "object",
       properties: {

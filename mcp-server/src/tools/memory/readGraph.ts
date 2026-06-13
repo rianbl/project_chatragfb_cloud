@@ -4,7 +4,8 @@ import { MemoryToolProxy } from "./types";
 export function buildReadGraphTool(proxy: MemoryToolProxy): ToolDefinition {
   return {
     name: "memory.read_graph",
-    description: "Read the complete memory graph (entities and relations).",
+    description:
+      "Read all remembered knowledge (entities and relations). Use when the user asks what is in memory.",
     inputSchema: {
       type: "object",
       properties: {},

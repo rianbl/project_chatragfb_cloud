@@ -5,7 +5,8 @@ import { FilesystemToolProxy } from "./types";
 export function buildWriteFileTool(proxy: FilesystemToolProxy): ToolDefinition {
   return {
     name: "filesystem.write_file",
-    description: "Write UTF-8 text content to a file under the configured filesystem root.",
+    description:
+      "Write or overwrite UTF-8 text into a file path. Use when the user asks to create/update file content.",
     inputSchema: {
       type: "object",
       properties: {

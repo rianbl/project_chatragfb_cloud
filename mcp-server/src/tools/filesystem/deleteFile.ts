@@ -5,7 +5,8 @@ import { FilesystemToolProxy } from "./types";
 export function buildDeleteFileTool(proxy: FilesystemToolProxy): ToolDefinition {
   return {
     name: "filesystem.delete_file",
-    description: "Delete a file under the configured filesystem root.",
+    description:
+      "Delete a file by path under the allowed root. Use only when the user explicitly asks to remove a file.",
     inputSchema: {
       type: "object",
       properties: {

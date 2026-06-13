@@ -22,6 +22,33 @@ _RETRIEVAL_TOOL_MANIFEST: dict[str, Any] = {
     },
 }
 
+_MEMORY_GRAPH_WRITE_TOOL_NAMES: set[str] = {
+    "memory.create_entities",
+    "memory.create_relations",
+    "memory.add_observations",
+}
+
+_MEMORY_GRAPH_UPSERT_MANIFEST: dict[str, Any] = {
+    "name": "memory.graph_upsert",
+    "description": (
+        "Update long-term memory graph from user-provided facts. "
+        "Use when the user asks to remember/store knowledge."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": (
+                    "Optional raw text to ingest into memory graph. "
+                    "Defaults to current user question."
+                ),
+            }
+        },
+        "additionalProperties": False,
+    },
+}
+
 
 class RetrievedDocument(TypedDict):
     content: str
@@ -84,14 +111,57 @@ def _normalize_manifests(raw: object) -> list[dict[str, Any]]:
 
 
 def _render_manifest(manifests: list[dict[str, Any]]) -> str:
+    rendered: list[dict[str, Any]] = []
+    for manifest in manifests:
+        input_schema = manifest.get("inputSchema")
+        properties = input_schema.get("properties", {}) if isinstance(input_schema, dict) else {}
+        required = (
+            input_schema.get("required", [])
+            if isinstance(input_schema, dict) and isinstance(input_schema.get("required"), list)
+            else []
+        )
+        required_names = {str(item) for item in required}
+        argument_docs: list[dict[str, Any]] = []
+        if isinstance(properties, dict):
+            for arg_name, arg_schema in properties.items():
+                if not isinstance(arg_schema, dict):
+                    continue
+                argument_docs.append(
+                    {
+                        "name": str(arg_name),
+                        "required": str(arg_name) in required_names,
+                        "type": str(arg_schema.get("type", "any")),
+                        "description": str(arg_schema.get("description", "")).strip(),
+                    }
+                )
+        rendered.append(
+            {
+                "name": manifest["name"],
+                "description": manifest["description"],
+                "arguments": argument_docs,
+                "inputSchema": manifest["inputSchema"],
+            }
+        )
     return json.dumps(
-        [
-            {"name": m["name"], "description": m["description"], "inputSchema": m["inputSchema"]}
-            for m in manifests
-        ],
+        rendered,
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _build_router_manifests(raw_tools: object) -> list[dict[str, Any]]:
+    manifests = _normalize_manifests(raw_tools)
+    has_memory_graph_write_tools = any(
+        manifest["name"] in _MEMORY_GRAPH_WRITE_TOOL_NAMES for manifest in manifests
+    )
+    filtered = [
+        manifest for manifest in manifests if manifest["name"] not in _MEMORY_GRAPH_WRITE_TOOL_NAMES
+    ]
+    if has_memory_graph_write_tools and not any(
+        manifest["name"] == _MEMORY_GRAPH_UPSERT_MANIFEST["name"] for manifest in filtered
+    ):
+        filtered.append(dict(_MEMORY_GRAPH_UPSERT_MANIFEST))
+    return filtered
 
 
 def _parse_tool_calls(raw_output: str, *, available_names: set[str]) -> list[dict[str, Any]]:
@@ -118,17 +188,28 @@ def _parse_tool_calls(raw_output: str, *, available_names: set[str]) -> list[dic
         calls: list[dict[str, Any]] = []
         seen: set[str] = set()
 
+        def append_call(name: str, args: object) -> None:
+            if name not in available_names:
+                return
+            safe_args = args if isinstance(args, dict) else {}
+            signature = json.dumps(
+                {"name": name, "arguments": safe_args},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if signature in seen:
+                return
+            seen.add(signature)
+            calls.append({"name": name, "arguments": safe_args})
+
         # preferred: {"tool_calls": [{"name": ..., "arguments": {...}}]}
         if isinstance(payload.get("tool_calls"), list):
             for item in payload["tool_calls"]:
                 if not isinstance(item, dict):
                     continue
                 name = str(item.get("name", "")).strip().lower()
-                if name not in available_names or name in seen:
-                    continue
-                seen.add(name)
                 args = item.get("arguments") or {}
-                calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+                append_call(name, args)
             return calls
 
         # fallback: {"tools": [...], "tool_inputs": {...}}
@@ -136,33 +217,16 @@ def _parse_tool_calls(raw_output: str, *, available_names: set[str]) -> list[dic
             tool_inputs: dict = payload.get("tool_inputs") or {}
             for name in payload["tools"]:
                 name = str(name).strip().lower()
-                if name not in available_names or name in seen:
-                    continue
-                seen.add(name)
                 args = tool_inputs.get(name) or {}
-                calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+                append_call(name, args)
             return calls
 
         # single tool object: {"name": "...", "arguments": {...}}
         if isinstance(payload.get("name"), str):
             name = str(payload["name"]).strip().lower()
-            if name in available_names:
-                args = payload.get("arguments") or payload.get("parameters") or {}
-                return [{"name": name, "arguments": args if isinstance(args, dict) else {}}]
-
-    # Last resort: scan raw text for any available tool name mentioned
-    found: list[dict[str, Any]] = []
-    seen_names: set[str] = set()
-    for name in sorted(available_names):  # sorted for determinism
-        if name in seen_names:
-            continue
-        # match whole tool name as word boundary in the raw text
-        if re.search(re.escape(name), (raw_output or ""), re.IGNORECASE):
-            found.append({"name": name, "arguments": {}})
-            seen_names.add(name)
-    # Only use text-scan fallback if exactly one tool was found (ambiguous = skip)
-    if len(found) == 1:
-        return found
+            args = payload.get("arguments") or payload.get("parameters") or {}
+            append_call(name, args)
+            return calls
 
     return []
 
@@ -193,7 +257,7 @@ def _is_surgical_read_request(user_input: str) -> bool:
 
 def _looks_semantic_context_query(user_input: str) -> bool:
     lowered = (user_input or "").lower()
-    semantic_markers = (
+    analysis_markers = (
         "resuma",
         "summary",
         "summarize",
@@ -203,12 +267,12 @@ def _looks_semantic_context_query(user_input: str) -> bool:
         "analyze",
         "o que diz",
         "what does",
+    )
+    contextual_markers = (
         "documento",
-        "arquivo",
         "manual",
         "contrato",
         "contexto",
-        "upload",
     )
     operational_markers = (
         "liste",
@@ -221,12 +285,20 @@ def _looks_semantic_context_query(user_input: str) -> bool:
         "write file",
         "renomeie",
         "rename",
+        "abra",
+        "open",
+        "mostre",
+        "show",
+        "leia",
+        "read",
     )
-    if any(marker in lowered for marker in operational_markers) and not any(
-        marker in lowered for marker in semantic_markers
-    ):
+    has_operational = any(marker in lowered for marker in operational_markers)
+    has_analysis = any(marker in lowered for marker in analysis_markers)
+    if has_operational and not has_analysis:
         return False
-    return any(marker in lowered for marker in semantic_markers)
+    if has_analysis:
+        return True
+    return any(marker in lowered for marker in contextual_markers)
 
 
 def _apply_routing_policy(
@@ -238,8 +310,10 @@ def _apply_routing_policy(
     if "retrieval" not in available_names:
         return tool_calls
 
+    semantic_query = _looks_semantic_context_query(user_input)
     names = [str(call.get("name", "")).strip().lower() for call in tool_calls]
     has_memory = any(name.startswith("memory.") for name in names)
+    has_filesystem_any = any(name.startswith("filesystem.") for name in names)
     has_filesystem_non_read = any(
         name.startswith("filesystem.") and name != "filesystem.read_file" for name in names
     )
@@ -247,21 +321,33 @@ def _apply_routing_policy(
     has_read = "filesystem.read_file" in names
     surgical_read = _is_surgical_read_request(user_input)
 
-    if has_retrieval and has_read and not surgical_read:
-        tool_calls = [call for call in tool_calls if call.get("name") != "filesystem.read_file"]
-        has_read = False
-
-    if has_read and not has_retrieval and not surgical_read:
-        tool_calls = [call for call in tool_calls if call.get("name") != "filesystem.read_file"]
+    if has_retrieval and (has_memory or has_filesystem_any) and not semantic_query:
+        tool_calls = [call for call in tool_calls if call.get("name") != "retrieval"]
         has_retrieval = False
+
+    if has_read and not surgical_read:
+        if has_retrieval and semantic_query:
+            tool_calls = [call for call in tool_calls if call.get("name") != "filesystem.read_file"]
+            has_read = False
+        elif has_retrieval and not semantic_query:
+            tool_calls = [call for call in tool_calls if call.get("name") != "retrieval"]
+            has_retrieval = False
+        elif not has_retrieval and semantic_query:
+            tool_calls = [call for call in tool_calls if call.get("name") != "filesystem.read_file"]
+            has_read = False
+            tool_calls.insert(0, {"name": "retrieval", "arguments": {"query": user_input}})
+            has_retrieval = True
 
     if (
         not has_retrieval
         and not has_memory
-        and not has_filesystem_non_read
-        and _looks_semantic_context_query(user_input)
+        and not has_filesystem_any
+        and semantic_query
     ):
         tool_calls.insert(0, {"name": "retrieval", "arguments": {"query": user_input}})
+
+    if has_filesystem_non_read and has_retrieval and not semantic_query:
+        tool_calls = [call for call in tool_calls if call.get("name") != "retrieval"]
 
     return tool_calls
 
@@ -269,9 +355,16 @@ def _apply_routing_policy(
 def _format_docs(documents: list[RetrievedDocument]) -> str:
     if not documents:
         return "[]"
+
+    def clipped(value: str, max_chars: int = 1000) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}...[truncated]"
+
     return "\n".join(
-        f"- source: {d.get('source', 'unknown')}\n  content: {d.get('content', '')}"
-        for d in documents
+        f"- source: {d.get('source', 'unknown')}\n  content: {clipped(str(d.get('content', '')))}"
+        for d in documents[:6]
     )
 
 
@@ -279,6 +372,225 @@ def _format_tool_results(results: dict[str, Any]) -> str:
     if not results:
         return "[]"
     return json.dumps(results, ensure_ascii=False)[:4000]
+
+
+def _split_text_chunks(text: str, *, max_chars: int = 2200) -> list[str]:
+    source = str(text or "").strip()
+    if not source:
+        return []
+    if len(source) <= max_chars:
+        return [source]
+
+    chunks: list[str] = []
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", source) if part.strip()]
+    current = ""
+
+    for paragraph in paragraphs:
+        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(paragraph) <= max_chars:
+            current = paragraph
+            continue
+
+        words = paragraph.split()
+        sentence = ""
+        for word in words:
+            next_sentence = f"{sentence} {word}".strip()
+            if len(next_sentence) <= max_chars:
+                sentence = next_sentence
+                continue
+            if sentence:
+                chunks.append(sentence)
+            sentence = word
+        if sentence:
+            current = sentence
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _extract_json_dict_candidates(raw_text: str) -> list[dict[str, Any]]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return []
+
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence:
+        text = fence.group(1).strip()
+
+    candidates: list[dict[str, Any]] = []
+    seen_payloads: set[str] = set()
+
+    def add_candidate(payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        signature = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if signature in seen_payloads:
+            return
+        seen_payloads.add(signature)
+        candidates.append(payload)
+
+    try:
+        add_candidate(json.loads(text))
+    except Exception:  # noqa: BLE001
+        pass
+
+    starts = [index for index, char in enumerate(text) if char == "{"]
+    for start in starts:
+        depth = 0
+        for end in range(start, len(text)):
+            char = text[end]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    fragment = text[start : end + 1]
+                    try:
+                        add_candidate(json.loads(fragment))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+        if len(candidates) >= 8:
+            break
+
+    return candidates
+
+
+def _sanitize_memory_graph(payload: object) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"entities": [], "relations": []}
+
+    raw_entities = payload.get("entities", [])
+    raw_relations = payload.get("relations", [])
+
+    entities: list[dict[str, Any]] = []
+    for item in raw_entities if isinstance(raw_entities, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        entity_type = str(item.get("entityType", "")).strip() or "unknown"
+        observations_raw = item.get("observations", [])
+        observations = (
+            [str(obs).strip() for obs in observations_raw if str(obs).strip()]
+            if isinstance(observations_raw, list)
+            else []
+        )
+        if not name:
+            continue
+        entities.append({"name": name, "entityType": entity_type, "observations": observations})
+
+    entity_names = {entity["name"] for entity in entities}
+    relations: list[dict[str, Any]] = []
+    for item in raw_relations if isinstance(raw_relations, list) else []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("from", "")).strip()
+        target = str(item.get("to", "")).strip()
+        relation_type = str(item.get("relationType", "")).strip()
+        if not source or not target or not relation_type:
+            continue
+        if source not in entity_names or target not in entity_names:
+            continue
+        relations.append({"from": source, "to": target, "relationType": relation_type})
+
+    return {"entities": entities, "relations": relations}
+
+
+def _merge_memory_graphs(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    merged_entities: dict[str, dict[str, Any]] = {}
+    merged_relations: set[tuple[str, str, str]] = set()
+
+    for part in parts:
+        for entity in part.get("entities", []):
+            name = str(entity.get("name", "")).strip()
+            if not name:
+                continue
+            entity_type = str(entity.get("entityType", "")).strip() or "unknown"
+            observations = entity.get("observations", [])
+            normalized_observations = (
+                [str(obs).strip() for obs in observations if str(obs).strip()]
+                if isinstance(observations, list)
+                else []
+            )
+            existing = merged_entities.get(name)
+            if existing is None:
+                merged_entities[name] = {
+                    "name": name,
+                    "entityType": entity_type,
+                    "observations": normalized_observations,
+                }
+                continue
+            if existing.get("entityType") == "unknown" and entity_type != "unknown":
+                existing["entityType"] = entity_type
+            existing_obs = set(existing.get("observations", []))
+            for obs in normalized_observations:
+                if obs not in existing_obs:
+                    existing.setdefault("observations", []).append(obs)
+                    existing_obs.add(obs)
+
+        for relation in part.get("relations", []):
+            source = str(relation.get("from", "")).strip()
+            target = str(relation.get("to", "")).strip()
+            relation_type = str(relation.get("relationType", "")).strip()
+            if not source or not target or not relation_type:
+                continue
+            merged_relations.add((source, target, relation_type))
+
+    entity_name_set = set(merged_entities.keys())
+    relations = [
+        {"from": source, "to": target, "relationType": relation_type}
+        for source, target, relation_type in sorted(merged_relations)
+        if source in entity_name_set and target in entity_name_set
+    ]
+
+    return {"entities": list(merged_entities.values()), "relations": relations}
+
+
+def _as_memory_graph(raw: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(raw, dict):
+        return {"entities": [], "relations": []}
+
+    if isinstance(raw.get("entities"), list) and isinstance(raw.get("relations"), list):
+        entities = [item for item in raw.get("entities", []) if isinstance(item, dict)]
+        relations = [item for item in raw.get("relations", []) if isinstance(item, dict)]
+        return {"entities": entities, "relations": relations}
+
+    structured = raw.get("structuredContent")
+    if isinstance(structured, dict):
+        return _as_memory_graph(structured)
+
+    content = raw.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = json.loads(text)
+            except Exception:  # noqa: BLE001
+                continue
+            graph = _as_memory_graph(parsed)
+            if graph["entities"] or graph["relations"]:
+                return graph
+
+    return {"entities": [], "relations": []}
+
+
+def _tool_data_payload(result: Any) -> Any:
+    if isinstance(result, dict) and "data" in result:
+        return result.get("data")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +604,9 @@ class RouterStep:
     llm: TextGeneratorPort
 
     def execute(self, state: RagWorkflowState) -> RagWorkflowState:
-        manifests = _normalize_manifests(state.get("available_tools", []))
+        manifests = _build_router_manifests(state.get("available_tools", []))
         available_names = {m["name"] for m in manifests}
+        logger.info("RouterStep: available_tools=%s", sorted(available_names))
         prompt = self.prompt_store.render(
             "router",
             conversation_context=state.get("conversation_context", ""),
@@ -443,6 +756,11 @@ class RagWorkflowOrchestrator:
         tool_name: str, args: dict[str, Any], state: RagWorkflowState
     ) -> dict[str, Any]:
         """Ensure tool arguments are valid before dispatch. Fixes incomplete LLM-generated args."""
+        if tool_name == "memory.graph_upsert":
+            text_value = args.get("text")
+            if isinstance(text_value, str) and text_value.strip():
+                return {"text": text_value.strip()}
+            return {"text": state.get("user_input", "").strip()}
         if tool_name == "memory.add_observations":
             observations = args.get("observations")
             if not isinstance(observations, list) or not observations:
@@ -478,10 +796,11 @@ class RagWorkflowOrchestrator:
             return {"names": [str(n).strip() for n in names if str(n).strip()]}
         return args
 
-    def _handle_memory_write(self, state: RagWorkflowState) -> dict[str, Any]:
+    def _handle_memory_write(self, state: RagWorkflowState, *, source_text: str | None = None) -> dict[str, Any]:
         """Extract graph from user_input via LLM, then create_entities + create_relations + add_observations."""
-        user_input = state.get("user_input", "").strip()
-        graph = self._build_memory_graph(user_input)
+        raw_memory_text = str(source_text or state.get("user_input") or "").strip()
+        memory_text = self._normalize_memory_text(raw_memory_text)
+        graph = self._build_memory_graph(memory_text)
         results: dict[str, Any] = {}
 
         entities = graph.get("entities") or []
@@ -503,43 +822,135 @@ class RagWorkflowOrchestrator:
             except Exception as exc:  # noqa: BLE001
                 self._logger.warning("memory.create_relations failed: %s", exc)
 
-        # always store raw text as observation so it's searchable
-        if self._mcp_tool_executor:
+        should_store_session_memory = not entities and not relations
+        if should_store_session_memory and self._mcp_tool_executor and memory_text:
             try:
                 results["add_observations"] = self._mcp_tool_executor(
                     "memory.add_observations",
-                    {"observations": [{"entityName": "session_memory", "contents": [user_input]}]},
+                    {"observations": [{"entityName": "session_memory", "contents": [memory_text]}]},
                 )
             except Exception as exc:  # noqa: BLE001
                 self._logger.warning("memory.add_observations failed: %s", exc)
 
+        if entities and self._mcp_tool_executor:
+            try:
+                read_graph_result = self._mcp_tool_executor("memory.read_graph", {})
+                graph_after = _as_memory_graph(_tool_data_payload(read_graph_result))
+                non_internal_entities = [
+                    item
+                    for item in graph_after.get("entities", [])
+                    if str(item.get("name", "")).strip().lower() != "session_memory"
+                ]
+                persisted_count = len(non_internal_entities)
+                expected_count = len(entities)
+                if persisted_count == 0 and expected_count > 0:
+                    self._logger.warning(
+                        "Memory graph write appears incomplete (expected_entities=%d, persisted_entities=%d). "
+                        "Running resilience add_observations per entity.",
+                        expected_count,
+                        persisted_count,
+                    )
+                    resilience_observations: list[dict[str, Any]] = []
+                    for entity in entities[:50]:
+                        if not isinstance(entity, dict):
+                            continue
+                        entity_name = str(entity.get("name", "")).strip()
+                        if not entity_name:
+                            continue
+                        raw_obs = entity.get("observations", [])
+                        normalized_obs = (
+                            [str(item).strip() for item in raw_obs if str(item).strip()]
+                            if isinstance(raw_obs, list)
+                            else []
+                        )
+                        if not normalized_obs:
+                            entity_type = str(entity.get("entityType", "")).strip() or "unknown"
+                            normalized_obs = [f"Entity type: {entity_type}"]
+                        resilience_observations.append(
+                            {"entityName": entity_name, "contents": normalized_obs[:3]}
+                        )
+                    if resilience_observations:
+                        results["resilience_add_observations"] = self._mcp_tool_executor(
+                            "memory.add_observations",
+                            {"observations": resilience_observations},
+                        )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("memory persistence verification failed: %s", exc)
+
         self._logger.info(
-            "_handle_memory_write: entities=%d relations=%d",
+            "_handle_memory_write: entities=%d relations=%d text_len=%d",
             len(entities),
             len(relations),
+            len(memory_text),
         )
         return results
+
+    def _normalize_memory_text(self, text: str) -> str:
+        raw_text = str(text or "").strip()
+        if not raw_text:
+            return ""
+        if self._graph_builder_llm is None or self._prompt_store is None:
+            return raw_text
+        try:
+            prompt = self._prompt_store.render("memory_text_normalizer", text=raw_text)
+            normalized = self._graph_builder_llm.generate(
+                prompt,
+                temperature=0.0,
+                max_new_tokens=1200,
+            ).strip()
+            if not normalized:
+                return raw_text
+            normalized = normalized.strip().strip('"').strip("'").strip()
+            if not normalized:
+                return raw_text
+            if len(raw_text) > 320 and len(normalized) < int(len(raw_text) * 0.75):
+                self._logger.warning(
+                    "memory_text_normalizer output looks truncated (raw_len=%d normalized_len=%d). "
+                    "Using raw text.",
+                    len(raw_text),
+                    len(normalized),
+                )
+                return raw_text
+            return normalized
+        except Exception:  # noqa: BLE001
+            self._logger.exception("_normalize_memory_text failed, using raw text.")
+            return raw_text
 
     def _build_memory_graph(self, text: str) -> dict[str, Any]:
         """Use LLM to extract entities and relations from text."""
         if self._graph_builder_llm is None or self._prompt_store is None:
             return {"entities": [], "relations": []}
-        try:
-            prompt = self._prompt_store.render("memory_graph_builder", text=text)
-            raw = self._graph_builder_llm.generate(prompt, temperature=0.0, max_new_tokens=800)
-            # strip code fences
-            raw = raw.strip()
-            fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
-            if fence:
-                raw = fence.group(1).strip()
-            m = re.search(r"\{.*\}", raw, re.DOTALL)
-            if m:
-                parsed = json.loads(m.group(0))
-                if isinstance(parsed, dict):
-                    return parsed
-        except Exception:  # noqa: BLE001
-            self._logger.exception("_build_memory_graph failed, returning empty graph.")
-        return {"entities": [], "relations": []}
+        source_text = str(text or "").strip()
+        if not source_text:
+            return {"entities": [], "relations": []}
+
+        chunks = _split_text_chunks(source_text, max_chars=2200)
+        graphs: list[dict[str, Any]] = []
+        for chunk in chunks[:8]:
+            try:
+                prompt = self._prompt_store.render("memory_graph_builder", text=chunk)
+                raw = self._graph_builder_llm.generate(prompt, temperature=0.0, max_new_tokens=1400)
+            except Exception:  # noqa: BLE001
+                self._logger.exception("_build_memory_graph chunk generation failed.")
+                continue
+
+            parsed_graph = {"entities": [], "relations": []}
+            for candidate in _extract_json_dict_candidates(raw):
+                sanitized = _sanitize_memory_graph(candidate)
+                if sanitized["entities"] or sanitized["relations"]:
+                    parsed_graph = sanitized
+                    break
+            if parsed_graph["entities"] or parsed_graph["relations"]:
+                graphs.append(parsed_graph)
+
+        merged = _merge_memory_graphs(graphs)
+        self._logger.info(
+            "_build_memory_graph: chunks=%d extracted_entities=%d extracted_relations=%d",
+            len(chunks[:8]),
+            len(merged.get("entities", [])),
+            len(merged.get("relations", [])),
+        )
+        return merged
 
     def _fetch_tools(self) -> list[dict[str, Any]]:
         if self._available_tools_provider is None:
@@ -571,10 +982,9 @@ class RagWorkflowOrchestrator:
                 return ("retrieval", docs)
             if self._mcp_tool_executor is None:
                 raise RuntimeError(f"No MCP executor configured for tool '{name}'.")
-            # memory write intent: extract graph then persist
-            if name == "memory.add_observations":
-                return (name, self._handle_memory_write(state))
             args = self._normalize_tool_args(name, args, state)
+            if name == "memory.graph_upsert":
+                return (name, self._handle_memory_write(state, source_text=str(args.get("text", "")).strip()))
             return (name, self._mcp_tool_executor(name, args))
 
         with ThreadPoolExecutor(max_workers=max(1, len(tool_calls))) as pool:

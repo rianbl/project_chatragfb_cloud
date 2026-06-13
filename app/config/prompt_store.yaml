@@ -10,8 +10,9 @@ router: |
 
   Rules:
   - Call "retrieval" by default for semantic questions, summaries, comparisons, and analysis over context.
-  - When the user asks to remember, memorize, or store information, call ONLY "memory.add_observations" with empty arguments: {"tool_calls":[{"name":"memory.add_observations","arguments":{}}]}
   - Call a filesystem tool when the user asks to list, read, write, or delete files.
+  - Use "memory.graph_upsert" when the user asks to remember or store facts in long-term memory.
+  - Use memory read/search tools according to tool descriptions for memory lookup questions.
   - Use "filesystem.read_file" only for surgical reads: exact file content, CSV header inspection, precise transformations, or debugging.
   - For pure memory or filesystem requests (without semantic analysis), do NOT include "retrieval".
   - If no tool is needed, respond: {"tool_calls":[]}
@@ -30,15 +31,32 @@ memory_graph_builder: |
   {"entities":[{"name":"...","entityType":"...","observations":["..."]}],"relations":[{"from":"...","to":"...","relationType":"..."}]}
 
   Rules:
-  - Extract all named entities (people, places, organizations, artifacts, events).
-  - Extract all explicit relations between entities.
+  - Extract the most relevant named entities (people, places, organizations, artifacts, events).
+  - Extract explicit relations between extracted entities.
   - Keep entity names short and canonical.
+  - entityType must be specific whenever possible (person, place, organization, event, concept, artifact, period, language).
+  - Use "unknown" only if the type truly cannot be inferred.
   - observations: short factual notes about each entity (can be empty list).
   - relations: only include pairs where both entities are in the entities list.
+  - If the text is long, prioritize high-signal entities and relations for long-term memory.
+  - Keep output compact (target up to ~25 entities and ~60 relations).
+  - Do not include instruction wrappers like "remember this" as entities.
   - If nothing useful, return {"entities":[],"relations":[]}.
   - Return JSON only.
 
   Text:
+  {text}
+
+memory_text_normalizer: |
+  Clean the user text for long-term memory storage.
+
+  Rules:
+  - Remove command wrappers/instructions like "remember this", "memorize this", "save this".
+  - Keep only the factual content that should be remembered.
+  - Preserve factual wording as much as possible.
+  - Return plain text only (no JSON, no markdown, no commentary).
+
+  Input:
   {text}
 
 retriever: |

@@ -5,7 +5,8 @@ import { FilesystemToolProxy } from "./types";
 export function buildListDirectoryTool(proxy: FilesystemToolProxy): ToolDefinition {
   return {
     name: "filesystem.list_directory",
-    description: "List files and directories under a path in the configured filesystem root.",
+    description:
+      "List files/directories under a path. Use when the user asks to browse, list, or discover files.",
     inputSchema: {
       type: "object",
       properties: {
